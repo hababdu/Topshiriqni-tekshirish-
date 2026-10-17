@@ -25,6 +25,7 @@ A_REVIEW = "📝 Tekshirish"
 A_REPORT = "📊 Hisobot"
 A_REPORT_PREV = "📊 O'tgan hafta"
 A_STUDENTS = "👥 O'quvchilar"
+A_EXCEL = "📥 Excel"
 A_CANCEL = "❌ Bekor qilish"
 
 
@@ -33,7 +34,8 @@ def admin_kb() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=A_TASK), KeyboardButton(text=A_REVIEW)],
             [KeyboardButton(text=A_REPORT), KeyboardButton(text=A_REPORT_PREV)],
-            [KeyboardButton(text=A_STUDENTS), KeyboardButton(text=A_CANCEL)],
+            [KeyboardButton(text=A_STUDENTS), KeyboardButton(text=A_EXCEL)],
+            [KeyboardButton(text=A_CANCEL)],
         ],
         resize_keyboard=True,
     )
@@ -97,5 +99,31 @@ def report_kb(offset: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📣 Guruhga yuborish", callback_data=f"rep:{offset}")]
+        ]
+    )
+
+
+def excel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📅 Shu hafta", callback_data="xl:w0"),
+                InlineKeyboardButton(text="⏮ O'tgan hafta", callback_data="xl:w1"),
+            ],
+            [
+                InlineKeyboardButton(text="🗓 Shu oy", callback_data="xl:m"),
+                InlineKeyboardButton(text="♾ Hammasi", callback_data="xl:all"),
+            ],
+        ]
+    )
+
+
+def restore_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Ha, tiklash", callback_data="rs:yes"),
+                InlineKeyboardButton(text="❌ Yo'q", callback_data="rs:no"),
+            ]
         ]
     )

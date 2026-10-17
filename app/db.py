@@ -1,38 +1,46 @@
+import asyncio
+import logging
 import os
-from datetime import date
+import re
+from datetime import date, datetime
+from decimal import Decimal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import aiosqlite
 
 from .timeutil import week_range
 
+log = logging.getLogger(__name__)
+
+# {pk} — avtomatik raqamli kalit, {big} — Telegram ID lari uchun katta butun son
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS students (
-    user_id   INTEGER PRIMARY KEY,
+    user_id   {big} PRIMARY KEY,
     full_name TEXT NOT NULL,
     username  TEXT,
-    joined_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     in_group  INTEGER NOT NULL DEFAULT 1,
     started   INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS tasks (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          {pk},
     title       TEXT NOT NULL,
     description TEXT,
     week_start  TEXT NOT NULL,
-    created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS submissions (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id        INTEGER NOT NULL,
-    task_id        INTEGER NOT NULL,
+    id             {pk},
+    user_id        {big} NOT NULL,
+    task_id        BIGINT NOT NULL,
     kind           TEXT NOT NULL,
     text           TEXT,
     file_id        TEXT,
-    storage_msg_id INTEGER NOT NULL,
+    storage_msg_id BIGINT NOT NULL,
     submit_date    TEXT NOT NULL,
-    submitted_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+    submitted_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     score          INTEGER,
-    graded_at      TEXT,
+    graded_at      TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES students(user_id),
     FOREIGN KEY (task_id) REFERENCES tasks(id)
 );
@@ -40,10 +48,55 @@ CREATE INDEX IF NOT EXISTS idx_sub_date ON submissions(submit_date);
 CREATE INDEX IF NOT EXISTS idx_sub_user ON submissions(user_id);
 """
 
+# Zaxira / tiklash uchun jadvallar va ustunlar (tartib muhim: bog'liqlik)
+TABLE_COLS = {
+    "students": ["user_id", "full_name", "username", "joined_at", "in_group", "started"],
+    "tasks": ["id", "title", "description", "week_start", "created_at"],
+    "submissions": [
+        "id", "user_id", "task_id", "kind", "text", "file_id", "storage_msg_id",
+        "submit_date", "submitted_at", "score", "graded_at",
+    ],
+}
+TS_COLS = {"joined_at", "created_at", "submitted_at", "graded_at"}
+SERIAL_TABLES = {"tasks": "id", "submissions": "id"}
+
+_RETRY_ERRORS: tuple = (OSError, asyncio.TimeoutError)
+
+
+def _clean_dsn(dsn: str) -> str:
+    """Neon ulanish satridagi asyncpg tushunmaydigan parametrlarni olib tashlaydi (channel_binding va h.k.)."""
+    parts = urlsplit(dsn)
+    keep = [(k, v) for k, v in parse_qsl(parts.query) if k in ("sslmode", "ssl", "application_name")]
+    if not any(k in ("sslmode", "ssl") for k, _ in keep):
+        keep.append(("sslmode", "require"))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(keep), parts.fragment))
+
+
+def _to_pg(q: str) -> str:
+    n = 0
+
+    def repl(_m):
+        nonlocal n
+        n += 1
+        return f"${n}"
+
+    return re.sub(r"\?", repl, q)
+
+
+def _norm(v):
+    if isinstance(v, Decimal):
+        return float(v)
+    return v
+
 
 class DB:
-    def __init__(self, path: str, hidden_ids=frozenset()):
+    """Ikki rejim: DATABASE_URL berilsa — Postgres (Neon), bo'lmasa — SQLite fayl (lokal sinov uchun)."""
+
+    def __init__(self, path: str, hidden_ids=frozenset(), dsn: str = ""):
         self.path = path
+        self.dsn = dsn.strip()
+        self.pg = bool(self.dsn)
+        self.pool = None
         # Adminlar (o'qituvchilar) o'quvchilar ro'yxati va statistikaga kirmaydi
         self.hidden = tuple(sorted(int(x) for x in hidden_ids))
 
@@ -53,11 +106,36 @@ class DB:
         return f" AND {col} NOT IN ({','.join(str(i) for i in self.hidden)})"
 
     async def init(self) -> None:
+        if self.pg:
+            import asyncpg
+
+            global _RETRY_ERRORS
+            _RETRY_ERRORS = (
+                OSError,
+                asyncio.TimeoutError,
+                asyncpg.exceptions.ConnectionDoesNotExistError,
+                asyncpg.exceptions.InterfaceError,
+                asyncpg.exceptions.CannotConnectNowError,
+                asyncpg.exceptions.ConnectionFailureError,
+            )
+            self.pool = await asyncpg.create_pool(
+                _clean_dsn(self.dsn),
+                min_size=0,
+                max_size=5,
+                timeout=30,
+                command_timeout=30,
+                statement_cache_size=0,  # Neon pooler (pgbouncer) bilan mos
+                max_inactive_connection_lifetime=60,  # Neon 5 daqiqada uxlaydi — eski ulanishlarni ushlamaymiz
+            )
+            async with self.pool.acquire() as c:
+                await c.execute(SCHEMA.format(pk="BIGSERIAL PRIMARY KEY", big="BIGINT"))
+            log.info("Postgres (DATABASE_URL) ga ulandi")
+            return
         folder = os.path.dirname(self.path)
         if folder:
             os.makedirs(folder, exist_ok=True)
         async with aiosqlite.connect(self.path) as c:
-            await c.executescript(SCHEMA)
+            await c.executescript(SCHEMA.format(pk="INTEGER PRIMARY KEY AUTOINCREMENT", big="INTEGER"))
             # Eski bazalar uchun yangi ustunlar (mavjud o'quvchilar: guruhda va botni boshlagan)
             cur = await c.execute("PRAGMA table_info(students)")
             cols = {r[1] for r in await cur.fetchall()}
@@ -66,9 +144,31 @@ class DB:
             if "started" not in cols:
                 await c.execute("ALTER TABLE students ADD COLUMN started INTEGER NOT NULL DEFAULT 1")
             await c.commit()
+        log.warning("DATABASE_URL yo'q — SQLite (%s) ishlatilyapti. Render'da bu fayl qayta ishga tushganda o'chadi!", self.path)
+
+    async def close(self) -> None:
+        if self.pool:
+            await self.pool.close()
 
     # --- yordamchi metodlar ---
+    async def _retry(self, fn):
+        for attempt in range(3):
+            try:
+                return await fn()
+            except _RETRY_ERRORS as e:
+                if not self.pg or attempt == 2:
+                    raise
+                log.warning("Baza ulanishi xatosi (%s), qayta urinaman...", e)
+                await asyncio.sleep(1 + attempt)
+
     async def _all(self, q: str, args: tuple = ()) -> list[dict]:
+        if self.pg:
+            async def go():
+                async with self.pool.acquire() as c:
+                    rows = await c.fetch(_to_pg(q), *args)
+                return [{k: _norm(v) for k, v in dict(r).items()} for r in rows]
+
+            return await self._retry(go)
         async with aiosqlite.connect(self.path) as c:
             c.row_factory = aiosqlite.Row
             cur = await c.execute(q, args)
@@ -78,7 +178,26 @@ class DB:
         rows = await self._all(q, args)
         return rows[0] if rows else None
 
-    async def _run(self, q: str, args: tuple = ()) -> int:
+    async def _run(self, q: str, args: tuple = ()) -> None:
+        if self.pg:
+            async def go():
+                async with self.pool.acquire() as c:
+                    await c.execute(_to_pg(q), *args)
+
+            await self._retry(go)
+            return
+        async with aiosqlite.connect(self.path) as c:
+            await c.execute(q, args)
+            await c.commit()
+
+    async def _insert(self, q: str, args: tuple = ()) -> int:
+        """INSERT va yangi qatorning id sini qaytaradi."""
+        if self.pg:
+            async def go():
+                async with self.pool.acquire() as c:
+                    return await c.fetchval(_to_pg(q) + " RETURNING id", *args)
+
+            return await self._retry(go)
         async with aiosqlite.connect(self.path) as c:
             cur = await c.execute(q, args)
             await c.commit()
@@ -114,7 +233,7 @@ class DB:
         """Hozir guruhda turgan o'quvchilar (adminlarsiz)."""
         return await self._all(
             "SELECT * FROM students WHERE in_group=1" + self._not_hidden("user_id")
-            + " ORDER BY full_name COLLATE NOCASE"
+            + " ORDER BY lower(full_name)"
         )
 
     async def reminder_targets(self) -> list[dict]:
@@ -123,7 +242,7 @@ class DB:
 
     # --- vazifalar ---
     async def add_task(self, title: str, description: str | None, week_start: str) -> int:
-        return await self._run(
+        return await self._insert(
             "INSERT INTO tasks(title, description, week_start) VALUES(?,?,?)",
             (title, description, week_start),
         )
@@ -147,7 +266,7 @@ class DB:
         storage_msg_id: int,
         submit_date: str,
     ) -> int:
-        return await self._run(
+        return await self._insert(
             "INSERT INTO submissions(user_id, task_id, kind, text, file_id, storage_msg_id, submit_date) "
             "VALUES(?,?,?,?,?,?,?)",
             (user_id, task_id, kind, text, file_id, storage_msg_id, submit_date),
@@ -236,3 +355,87 @@ class DB:
             label = date.fromisoformat(start).strftime("%d.%m")
             series.append((label, float(row["a"]) if row and row["a"] is not None else 0.0))
         return series
+
+    # --- Excel hisobot uchun ---
+    async def tasks_in_range(self, start: str, end: str) -> list[dict]:
+        """Boshlanish sanasi [start, end) oralig'ida bo'lgan haftalarning vazifalari."""
+        return await self._all(
+            "SELECT * FROM tasks WHERE week_start>=? AND week_start<? ORDER BY week_start, id",
+            (start, end),
+        )
+
+    async def score_map(self, task_ids: list[int]) -> dict[int, dict[int, float | None]]:
+        """{user_id: {task_id: o'rtacha ball yoki None}} — berilgan vazifalar bo'yicha."""
+        if not task_ids:
+            return {}
+        ids = ",".join(str(int(i)) for i in task_ids)
+        rows = await self._all(
+            f"SELECT user_id, task_id, AVG(score) AS score FROM submissions "
+            f"WHERE task_id IN ({ids}) GROUP BY user_id, task_id"
+        )
+        out: dict[int, dict[int, float | None]] = {}
+        for r in rows:
+            out.setdefault(r["user_id"], {})[r["task_id"]] = r["score"]
+        return out
+
+    async def submissions_in_range(self, start: str, end: str) -> list[dict]:
+        return await self._all(
+            "SELECT sub.submit_date, s.full_name, t.title AS task_title, sub.kind, sub.score "
+            "FROM submissions sub JOIN students s ON s.user_id=sub.user_id "
+            "JOIN tasks t ON t.id=sub.task_id "
+            "WHERE sub.submit_date>=? AND sub.submit_date<?" + self._not_hidden("sub.user_id") +
+            " ORDER BY sub.submit_date, s.full_name, sub.id",
+            (start, end),
+        )
+
+    # --- zaxira / tiklash ---
+    async def export_all(self) -> dict[str, list[dict]]:
+        """Barcha jadvallarning to'liq nusxasi (adminlar va ketganlar ham)."""
+        out: dict[str, list[dict]] = {}
+        for table, cols in TABLE_COLS.items():
+            pk = "user_id" if table == "students" else "id"
+            out[table] = await self._all(f"SELECT {', '.join(cols)} FROM {table} ORDER BY {pk}")
+        return out
+
+    def _import_value(self, col: str, v):
+        if self.pg and col in TS_COLS and isinstance(v, str):
+            return datetime.fromisoformat(v)
+        return v
+
+    async def import_all(self, tables: dict[str, list[dict]]) -> dict[str, int]:
+        """Bazani to'liq almashtiradi (bitta tranzaksiyada: xato bo'lsa eski ma'lumot saqlanadi)."""
+        for name in TABLE_COLS:
+            if name not in tables or not isinstance(tables[name], list):
+                raise ValueError(f"Zaxira faylida «{name}» jadvali yo'q")
+        order = ["submissions", "tasks", "students"]  # o'chirish tartibi
+        stmts: list[tuple[str, tuple]] = [(f"DELETE FROM {t}", ()) for t in order]
+        for table, cols in TABLE_COLS.items():
+            ph = ",".join("?" for _ in cols)
+            sql = f"INSERT INTO {table}({', '.join(cols)}) VALUES({ph})"
+            for row in tables[table]:
+                stmts.append((sql, tuple(self._import_value(c, row.get(c)) for c in cols)))
+        counts = {t: len(tables[t]) for t in TABLE_COLS}
+
+        if self.pg:
+            async def go():
+                async with self.pool.acquire() as c:
+                    async with c.transaction():
+                        for sql, args in stmts:
+                            await c.execute(_to_pg(sql), *args)
+                        for table, col in SERIAL_TABLES.items():
+                            await c.execute(
+                                f"SELECT setval(pg_get_serial_sequence('{table}','{col}'), "
+                                f"COALESCE((SELECT MAX({col}) FROM {table}), 0) + 1, false)"
+                            )
+
+            await self._retry(go)
+            return counts
+        async with aiosqlite.connect(self.path) as c:
+            try:
+                for sql, args in stmts:
+                    await c.execute(sql, args)
+                await c.commit()
+            except Exception:
+                await c.rollback()
+                raise
+        return counts

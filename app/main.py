@@ -41,6 +41,8 @@ async def setup_commands(bot: Bot, cfg) -> None:
         BotCommand(command="tekshir", description="📝 Ishlarni tekshirish"),
         BotCommand(command="hisobot", description="📊 Haftalik hisobot"),
         BotCommand(command="oquvchilar", description="👥 O'quvchilar ro'yxati"),
+        BotCommand(command="excel", description="📥 Statistika (Excel)"),
+        BotCommand(command="zaxira", description="💾 Baza zaxirasi"),
         BotCommand(command="bekor", description="❌ Bekor qilish"),
     ]
     for admin_id in cfg.admin_ids:
@@ -68,7 +70,7 @@ async def check_access(bot: Bot, cfg) -> None:
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = load_config()
-    db = DB(cfg.db_path, cfg.admin_ids)
+    db = DB(cfg.db_path, cfg.admin_ids, cfg.database_url)
     await db.init()
 
     bot = Bot(cfg.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -89,8 +91,11 @@ async def main() -> None:
     await bot.delete_webhook(drop_pending_updates=True)
     sync_task = asyncio.create_task(sync_roster(bot, db, cfg))  # ketganlarni ro'yxatdan chiqarish
     # chat_member yangilanishlari avtomatik so'raladi (group.router da handler bor)
-    await dp.start_polling(bot)
-    await sync_task
+    try:
+        await dp.start_polling(bot)
+        await sync_task
+    finally:
+        await db.close()
 
 
 if __name__ == "__main__":

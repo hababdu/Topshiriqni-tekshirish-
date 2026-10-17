@@ -17,6 +17,8 @@ class Config:
     db_path: str
     keepalive_url: str
     keepalive_minutes: int
+    database_url: str
+    backup_hour: int
 
 
 def _required(name: str) -> str:
@@ -42,4 +44,6 @@ def load_config() -> Config:
         db_path=os.getenv("DB_PATH", "data/bot.db"),
         keepalive_url=keepalive_url,
         keepalive_minutes=int(os.getenv("KEEPALIVE_MINUTES", "5")),
+        database_url=os.getenv("DATABASE_URL", "").strip(),
+        backup_hour=int(os.getenv("BACKUP_HOUR", "2")),
     )

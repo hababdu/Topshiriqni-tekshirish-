@@ -34,11 +34,26 @@ Telegram Bot API guruh a'zolarining to'liq ro'yxatini bermaydi, shuning uchun bo
 - **Admin → 👥 O'quvchilar**: har bir o'quvchi 🟢 (topshirgan) yoki 🔴 (topshirmagan). Tugmalar bilan filtr: vazifa bo'yicha (hamma / alohida) va holat bo'yicha (hamma / 🟢 / 🔴). ⚠️ — o'quvchi botga hali `/start` bosmagan.
 - **O'quvchi → 📋 Vazifalar** va **📤 Vazifa topshirish**: har bir vazifa 🟢 topshirilgan yoki 🔴 topshirilmagan.
 
-## Render (bepul tarif) da uxlab qolmasligi uchun
+## Render (bepul) + Neon (bepul Postgres): ma'lumot o'chmasligi uchun
 
-Render bepul Web Service ga 15 daqiqa HTTP so'rov kelmasa uni uxlatadi. Bot har 5 daqiqada (`KEEPALIVE_MINUTES`) o'z `RENDER_EXTERNAL_URL/health` manziliga so'rov yuboradi. Qo'shimcha kafolat uchun [UptimeRobot](https://uptimerobot.com) yoki cron-job.org da `https://NOM.onrender.com/health` ni har 5 daqiqada tekshiradigan monitor qo'ying (u server allaqachon uxlab qolgan bo'lsa ham uyg'otadi).
+Render bepul xizmatida fayl tizimi doimiy emas, shuning uchun baza **Neon**'da turadi:
 
-> ⚠️ Render bepul tarifida fayl tizimi doimiy emas: qayta deploy/restart bo'lganda `data/bot.db` o'chib ketadi. Doimiy disk (pullik) yoki tashqi baza kerak.
+1. [neon.com](https://neon.com) da loyiha oching va **Connection string** ni nusxalang (`postgresql://…`).
+2. Render → Environment: `DATABASE_URL` = shu satr. (Boshqa o'zgaruvchilar `.env.example` da.)
+3. `DATABASE_URL` bo'lmasa bot lokal SQLite faylga yozadi (faqat kompyuterda sinash uchun, Renderda ma'lumot o'chib ketadi).
+
+**Uxlab qolmasligi:** Render 15 daqiqa HTTP so'rov bo'lmasa serverni uxlatadi. Bot har 5 daqiqada o'z `RENDER_EXTERNAL_URL/health` manziliga so'rov yuboradi. Qo'shimcha kafolat uchun [UptimeRobot](https://uptimerobot.com) da `https://NOM.onrender.com/health` ga 5 daqiqalik monitor qo'ying (server allaqachon uxlab qolgan bo'lsa ham uyg'otadi).
+
+## Zaxira va tiklash
+
+- Har kuni `BACKUP_HOUR`:30 da bazaning to'liq nusxasi (`zaxira_….json.gz`) yopiq kanalga yuboriladi.
+- Admin `/zaxira` buyrug'i bilan istalgan vaqtda nusxa oladi.
+- **Tiklash:** zaxira faylini botga (admin sifatida) yuboring → tasdiqlang. Almashtirishdan oldin joriy bazaning zaxirasi ham yuboriladi; tiklash xatosida eski ma'lumot saqlanadi.
+- Neon bepul rejasida o'zining tiklash oynasi atigi 6 soat, shuning uchun bu kunlik zaxira muhim.
+
+## 📥 Excel statistika
+
+Admin → **📥 Excel** (yoki `/excel`) → davr: shu hafta / o'tgan hafta / shu oy / hammasi. Fayl 3 varaqdan iborat: **Reyting**, **Vazifalar holati** (🟢 yashil / 🔴 qizil kataklar), **Barcha ishlar**.
 
 ## O'rnatish
 

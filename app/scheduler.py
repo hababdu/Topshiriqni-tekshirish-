@@ -8,6 +8,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from .backup import scheduled_backup
 from .config import Config
 from .db import DB
 from .keyboards import A_REPORT, A_REVIEW, BTN_SUBMIT
@@ -82,6 +83,12 @@ def setup_scheduler(bot: Bot, db: DB, cfg: Config) -> AsyncIOScheduler:
         CronTrigger(day_of_week="sun", hour=20, minute=0),
         args=[bot, db, cfg],
         id="week_end_notice",
+    )
+    sched.add_job(
+        scheduled_backup,
+        CronTrigger(hour=cfg.backup_hour, minute=30),
+        args=[bot, db, cfg],
+        id="daily_backup",
     )
     sched.add_job(
         sync_roster,

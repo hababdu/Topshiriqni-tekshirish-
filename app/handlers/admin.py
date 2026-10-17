@@ -7,11 +7,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, Message, TelegramObject
 
+from ..backup import parse_backup, send_backup
 from ..charts import weekly_chart
 from ..config import Config
 from ..db import DB
+from ..export import PERIODS, build_stats_xlsx
 from ..keyboards import (
     A_CANCEL,
+    A_EXCEL,
     A_REPORT,
     A_REPORT_PREV,
     A_REVIEW,
@@ -19,8 +22,10 @@ from ..keyboards import (
     A_TASK,
     admin_kb,
     board_kb,
+    excel_kb,
     grade_kb,
     report_kb,
+    restore_kb,
 )
 from ..texts import bar, esc, hint, kv, quote, score_badge, split_lines, title
 from ..timeutil import today, week_range, week_start
@@ -37,7 +42,7 @@ router.message.filter(F.chat.type == "private", IsAdmin())
 router.callback_query.filter(IsAdmin())
 
 
-ADMIN_BTNS = {A_TASK, A_REVIEW, A_REPORT, A_REPORT_PREV, A_STUDENTS, A_CANCEL}
+ADMIN_BTNS = {A_TASK, A_REVIEW, A_REPORT, A_REPORT_PREV, A_STUDENTS, A_EXCEL, A_CANCEL}
 
 
 class NewTask(StatesGroup):
@@ -52,7 +57,9 @@ HELP = (
     f"<b>{esc(A_REVIEW)}</b> — ishlarni ko'rib baholash\n"
     f"<b>{esc(A_REPORT)}</b> — shu haftalik statistika\n"
     f"<b>{esc(A_REPORT_PREV)}</b> — o'tgan hafta hisoboti\n"
-    f"<b>{esc(A_STUDENTS)}</b> — ro'yxatdan o'tganlar"
+    f"<b>{esc(A_STUDENTS)}</b> — guruh o'quvchilari: 🟢 topshirgan / 🔴 topshirmagan\n"
+    f"<b>{esc(A_EXCEL)}</b> — statistikani Excel fayl qilib olish\n"
+    "<b>/zaxira</b> — bazaning zaxira nusxasi (tiklash: shu faylni botga yuboring)"
 )
 
 
@@ -328,3 +335,94 @@ async def board_cb(c: CallbackQuery, db: DB, cfg: Config):
     except TelegramBadRequest:  # "message is not modified"
         pass
     await c.answer()
+
+
+# ---------- Excel hisobot ----------
+@router.message(Command("excel"))
+@router.message(F.text == A_EXCEL)
+async def excel_menu(m: Message, state: FSMContext):
+    await state.clear()
+    await m.answer(
+        f"{title('📥', 'Excel hisobot')}\nQaysi davr uchun statistika kerak? 👇",
+        reply_markup=excel_kb(),
+    )
+
+
+@router.callback_query(F.data.startswith("xl:"))
+async def excel_cb(c: CallbackQuery, db: DB, cfg: Config, bot: Bot):
+    period = c.data.split(":")[1]
+    if period not in PERIODS:
+        await c.answer()
+        return
+    await c.answer("⏳ Tayyorlanmoqda…")
+    data, name = await build_stats_xlsx(db, cfg, period)
+    await bot.send_document(
+        c.message.chat.id,
+        BufferedInputFile(data, name),
+        caption=f"{title('📥', 'Statistika')} · {esc(PERIODS[period])}\n"
+        + hint("Varaqlar: Reyting · Vazifalar holati (🟢/🔴) · Barcha ishlar"),
+    )
+
+
+# ---------- zaxira va tiklash ----------
+_pending_restore: dict[int, dict] = {}
+
+
+@router.message(Command("zaxira"))
+async def backup_cmd(m: Message, db: DB, cfg: Config, bot: Bot):
+    await m.answer("⏳ Zaxira tayyorlanmoqda…")
+    await send_backup(bot, m.chat.id, db, cfg)
+
+
+@router.message(F.document)
+async def restore_file(m: Message, bot: Bot):
+    name = (m.document.file_name or "").lower()
+    if not (name.endswith(".json.gz") or name.endswith(".json")):
+        await m.answer(
+            "📎 Zaxirani tiklash uchun botdan olingan <code>zaxira_….json.gz</code> faylini yuboring."
+        )
+        return
+    if (m.document.file_size or 0) > 15 * 1024 * 1024:
+        await m.answer("⚠️ Fayl juda katta.")
+        return
+    try:
+        buf = await bot.download(m.document)
+        tables = parse_backup(buf.read())
+    except ValueError as e:
+        await m.answer(f"⚠️ {esc(str(e))}")
+        return
+    except TelegramAPIError as e:
+        await m.answer(f"⚠️ Faylni yuklab bo'lmadi: {esc(str(e))[:200]}")
+        return
+    _pending_restore[m.from_user.id] = tables
+    await m.answer(
+        f"{title('♻️', 'Zaxiradan tiklash')}\n"
+        f"{kv('👥', 'O‘quvchilar', len(tables['students']), code=True)}   "
+        f"{kv('📋', 'Vazifalar', len(tables['tasks']), code=True)}   "
+        f"{kv('📤', 'Ishlar', len(tables['submissions']), code=True)}\n\n"
+        "⚠️ Hozirgi barcha ma'lumotlar <b>shu fayl bilan almashtiriladi</b>. "
+        "Almashtirishdan oldin hozirgi bazaning zaxirasi ham yuboriladi.",
+        reply_markup=restore_kb(),
+    )
+
+
+@router.callback_query(F.data.startswith("rs:"))
+async def restore_cb(c: CallbackQuery, db: DB, cfg: Config, bot: Bot):
+    tables = _pending_restore.pop(c.from_user.id, None)
+    if c.data == "rs:no" or tables is None:
+        await c.message.edit_text("❌ Tiklash bekor qilindi." if c.data == "rs:no" else "⌛ So'rov eskirgan, faylni qayta yuboring.")
+        await c.answer()
+        return
+    await c.answer("⏳")
+    try:
+        await send_backup(bot, c.message.chat.id, db, cfg)  # xavfsizlik uchun hozirgi holat
+        counts = await db.import_all(tables)
+    except Exception as e:  # tranzaksiya qaytarilgan — eski ma'lumot joyida
+        await c.message.edit_text(f"⚠️ Tiklanmadi, eski ma'lumotlar joyida: {esc(str(e))[:300]}")
+        return
+    await c.message.edit_text(
+        f"{title('✅', 'Tiklandi')}\n"
+        f"{kv('👥', 'O‘quvchilar', counts['students'], code=True)}   "
+        f"{kv('📋', 'Vazifalar', counts['tasks'], code=True)}   "
+        f"{kv('📤', 'Ishlar', counts['submissions'], code=True)}"
+    )
