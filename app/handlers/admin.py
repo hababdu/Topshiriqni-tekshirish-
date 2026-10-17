@@ -10,7 +10,17 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message, TelegramObj
 from ..charts import weekly_chart
 from ..config import Config
 from ..db import DB
-from ..keyboards import grade_kb, report_kb
+from ..keyboards import (
+    A_CANCEL,
+    A_REPORT,
+    A_REPORT_PREV,
+    A_REVIEW,
+    A_STUDENTS,
+    A_TASK,
+    admin_kb,
+    grade_kb,
+    report_kb,
+)
 from ..timeutil import today, week_range, week_start
 
 
@@ -23,6 +33,9 @@ class IsAdmin(BaseFilter):
 router = Router()
 router.message.filter(F.chat.type == "private", IsAdmin())
 router.callback_query.filter(IsAdmin())
+
+
+ADMIN_BTNS = {A_TASK, A_REVIEW, A_REPORT, A_REPORT_PREV, A_STUDENTS, A_CANCEL}
 
 
 class NewTask(StatesGroup):
@@ -44,30 +57,33 @@ HELP = (
 @router.message(CommandStart())
 async def start(m: Message, state: FSMContext):
     await state.clear()
-    await m.answer(HELP)
+    await m.answer(HELP, reply_markup=admin_kb())
 
 
 @router.message(Command("bekor"))
+@router.message(F.text == A_CANCEL)
 async def cancel(m: Message, state: FSMContext):
     await state.clear()
-    await m.answer("Bekor qilindi.")
+    await m.answer("Bekor qilindi.", reply_markup=admin_kb())
 
 
 # ---------- vazifa qo'shish ----------
 @router.message(Command("vazifa"))
+@router.message(F.text == A_TASK)
 async def new_task(m: Message, state: FSMContext):
+    await state.clear()
     await state.set_state(NewTask.title)
     await m.answer("Vazifa nomini yozing:")
 
 
-@router.message(NewTask.title, F.text)
+@router.message(NewTask.title, F.text, ~F.text.in_(ADMIN_BTNS))
 async def task_title(m: Message, state: FSMContext):
     await state.update_data(title=m.text.strip()[:120])
     await state.set_state(NewTask.desc)
     await m.answer("Vazifa tavsifini yozing (yo'q bo'lsa «-» yuboring):")
 
 
-@router.message(NewTask.desc, F.text)
+@router.message(NewTask.desc, F.text, ~F.text.in_(ADMIN_BTNS))
 async def task_desc(m: Message, state: FSMContext, db: DB, cfg: Config, bot: Bot):
     data = await state.get_data()
     desc = None if m.text.strip() == "-" else m.text.strip()
@@ -104,7 +120,9 @@ async def send_next(bot: Bot, db: DB, cfg: Config, chat_id: int, after_id: int =
 
 
 @router.message(Command("tekshir"))
-async def review(m: Message, db: DB, cfg: Config, bot: Bot):
+@router.message(F.text == A_REVIEW)
+async def review(m: Message, state: FSMContext, db: DB, cfg: Config, bot: Bot):
+    await state.clear()
     n = await db.pending_count()
     if n == 0:
         await m.answer("✅ Tekshirilmagan ish yo'q.")
@@ -166,9 +184,11 @@ async def send_report(bot: Bot, chat_id: int, text: str, png: bytes, markup=None
 
 
 @router.message(Command("hisobot"))
-async def report(m: Message, db: DB, cfg: Config, bot: Bot):
+@router.message(F.text.in_({A_REPORT, A_REPORT_PREV}))
+async def report(m: Message, state: FSMContext, db: DB, cfg: Config, bot: Bot):
+    await state.clear()
     parts = (m.text or "").split()
-    offset = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+    offset = 1 if m.text == A_REPORT_PREV else (int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0)
     students = await db.all_students()
     if not students:
         await m.answer("Hali o'quvchilar ro'yxatdan o'tmagan.")
@@ -189,7 +209,9 @@ async def report_to_group(c: CallbackQuery, db: DB, cfg: Config, bot: Bot):
 
 
 @router.message(Command("oquvchilar"))
-async def students(m: Message, db: DB):
+@router.message(F.text == A_STUDENTS)
+async def students(m: Message, state: FSMContext, db: DB):
+    await state.clear()
     rows = await db.all_students()
     if not rows:
         await m.answer("Hali o'quvchilar yo'q.")

@@ -20,6 +20,25 @@ def main_kb() -> ReplyKeyboardMarkup:
     )
 
 
+A_TASK = "➕ Yangi vazifa"
+A_REVIEW = "📝 Tekshirish"
+A_REPORT = "📊 Hisobot"
+A_REPORT_PREV = "📊 O'tgan hafta"
+A_STUDENTS = "👥 O'quvchilar"
+A_CANCEL = "❌ Bekor qilish"
+
+
+def admin_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=A_TASK), KeyboardButton(text=A_REVIEW)],
+            [KeyboardButton(text=A_REPORT), KeyboardButton(text=A_REPORT_PREV)],
+            [KeyboardButton(text=A_STUDENTS), KeyboardButton(text=A_CANCEL)],
+        ],
+        resize_keyboard=True,
+    )
+
+
 def done_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=BTN_DONE)]], resize_keyboard=True)
 
