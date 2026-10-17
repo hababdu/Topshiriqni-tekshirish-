@@ -10,7 +10,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from .config import load_config
 from .db import DB
-from .handlers import admin, student
+from .handlers import admin, group, student
+from .roster import sync_roster
 from .scheduler import setup_scheduler
 
 
@@ -67,7 +68,7 @@ async def check_access(bot: Bot, cfg) -> None:
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = load_config()
-    db = DB(cfg.db_path)
+    db = DB(cfg.db_path, cfg.admin_ids)
     await db.init()
 
     bot = Bot(cfg.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -76,6 +77,7 @@ async def main() -> None:
     dp["cfg"] = cfg
     # Admin router birinchi: adminlar uchun /start va buyruqlar shu yerda ushlanadi
     dp.include_router(admin.router)
+    dp.include_router(group.router)
     dp.include_router(student.router)
 
     scheduler = setup_scheduler(bot, db, cfg)
@@ -85,7 +87,10 @@ async def main() -> None:
     await setup_commands(bot, cfg)
     await start_health_server()
     await bot.delete_webhook(drop_pending_updates=True)
+    sync_task = asyncio.create_task(sync_roster(bot, db, cfg))  # ketganlarni ro'yxatdan chiqarish
+    # chat_member yangilanishlari avtomatik so'raladi (group.router da handler bor)
     await dp.start_polling(bot)
+    await sync_task
 
 
 if __name__ == "__main__":

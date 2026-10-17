@@ -10,7 +10,9 @@ CREATE TABLE IF NOT EXISTS students (
     user_id   INTEGER PRIMARY KEY,
     full_name TEXT NOT NULL,
     username  TEXT,
-    joined_at TEXT DEFAULT CURRENT_TIMESTAMP
+    joined_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    in_group  INTEGER NOT NULL DEFAULT 1,
+    started   INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS tasks (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,8 +42,15 @@ CREATE INDEX IF NOT EXISTS idx_sub_user ON submissions(user_id);
 
 
 class DB:
-    def __init__(self, path: str):
+    def __init__(self, path: str, hidden_ids=frozenset()):
         self.path = path
+        # Adminlar (o'qituvchilar) o'quvchilar ro'yxati va statistikaga kirmaydi
+        self.hidden = tuple(sorted(int(x) for x in hidden_ids))
+
+    def _not_hidden(self, col: str) -> str:
+        if not self.hidden:
+            return ""
+        return f" AND {col} NOT IN ({','.join(str(i) for i in self.hidden)})"
 
     async def init(self) -> None:
         folder = os.path.dirname(self.path)
@@ -49,6 +58,13 @@ class DB:
             os.makedirs(folder, exist_ok=True)
         async with aiosqlite.connect(self.path) as c:
             await c.executescript(SCHEMA)
+            # Eski bazalar uchun yangi ustunlar (mavjud o'quvchilar: guruhda va botni boshlagan)
+            cur = await c.execute("PRAGMA table_info(students)")
+            cols = {r[1] for r in await cur.fetchall()}
+            if "in_group" not in cols:
+                await c.execute("ALTER TABLE students ADD COLUMN in_group INTEGER NOT NULL DEFAULT 1")
+            if "started" not in cols:
+                await c.execute("ALTER TABLE students ADD COLUMN started INTEGER NOT NULL DEFAULT 1")
             await c.commit()
 
     # --- yordamchi metodlar ---
@@ -69,18 +85,41 @@ class DB:
             return cur.lastrowid
 
     # --- o'quvchilar ---
-    async def add_student(self, user_id: int, full_name: str, username: str | None) -> None:
+    async def upsert_member(self, user_id: int, full_name: str, username: str | None) -> None:
+        """Guruh a'zosini ro'yxatga qo'shadi (botni hali boshlamagan bo'lishi mumkin)."""
         await self._run(
-            "INSERT INTO students(user_id, full_name, username) VALUES(?,?,?) "
-            "ON CONFLICT(user_id) DO UPDATE SET full_name=excluded.full_name, username=excluded.username",
+            "INSERT INTO students(user_id, full_name, username, in_group, started) VALUES(?,?,?,1,0) "
+            "ON CONFLICT(user_id) DO UPDATE SET in_group=1, username=excluded.username, "
+            "full_name=CASE WHEN students.started=1 THEN students.full_name ELSE excluded.full_name END",
             (user_id, full_name, username),
         )
+
+    async def register_started(self, user_id: int, full_name: str, username: str | None) -> dict:
+        """O'quvchi botga /start bosdi (endi unga xabar yuborish mumkin)."""
+        await self._run(
+            "INSERT INTO students(user_id, full_name, username, in_group, started) VALUES(?,?,?,1,1) "
+            "ON CONFLICT(user_id) DO UPDATE SET in_group=1, started=1, username=excluded.username, "
+            "full_name=CASE WHEN students.started=1 THEN students.full_name ELSE excluded.full_name END",
+            (user_id, full_name, username),
+        )
+        return await self.get_student(user_id)
+
+    async def mark_left(self, user_id: int) -> None:
+        await self._run("UPDATE students SET in_group=0 WHERE user_id=?", (user_id,))
 
     async def get_student(self, user_id: int) -> dict | None:
         return await self._one("SELECT * FROM students WHERE user_id=?", (user_id,))
 
     async def all_students(self) -> list[dict]:
-        return await self._all("SELECT * FROM students ORDER BY full_name")
+        """Hozir guruhda turgan o'quvchilar (adminlarsiz)."""
+        return await self._all(
+            "SELECT * FROM students WHERE in_group=1" + self._not_hidden("user_id")
+            + " ORDER BY full_name COLLATE NOCASE"
+        )
+
+    async def reminder_targets(self) -> list[dict]:
+        """Eslatma yuborsa bo'ladigan o'quvchilar (guruhda va botni boshlagan)."""
+        return [s for s in await self.all_students() if s["started"]]
 
     # --- vazifalar ---
     async def add_task(self, title: str, description: str | None, week_start: str) -> int:
@@ -113,6 +152,19 @@ class DB:
             "VALUES(?,?,?,?,?,?,?)",
             (user_id, task_id, kind, text, file_id, storage_msg_id, submit_date),
         )
+
+    async def week_submissions(self, week_start: str) -> dict[int, dict[int, float | None]]:
+        """{user_id: {task_id: o'rtacha ball yoki None (hali baholanmagan)}} — shu haftaning vazifalari bo'yicha."""
+        rows = await self._all(
+            "SELECT sub.user_id, sub.task_id, AVG(sub.score) AS score "
+            "FROM submissions sub JOIN tasks t ON t.id=sub.task_id "
+            "WHERE t.week_start=? GROUP BY sub.user_id, sub.task_id",
+            (week_start,),
+        )
+        out: dict[int, dict[int, float | None]] = {}
+        for r in rows:
+            out.setdefault(r["user_id"], {})[r["task_id"]] = r["score"]
+        return out
 
     async def has_submission_on(self, user_id: int, day: date) -> bool:
         row = await self._one(
@@ -156,7 +208,8 @@ class DB:
             "COALESCE(SUM(sub.score),0) AS points, AVG(sub.score) AS avg_score "
             "FROM students s LEFT JOIN submissions sub "
             "ON sub.user_id=s.user_id AND sub.submit_date>=? AND sub.submit_date<? "
-            "GROUP BY s.user_id ORDER BY points DESC, total DESC, s.full_name",
+            "WHERE s.in_group=1" + self._not_hidden("s.user_id") +
+            " GROUP BY s.user_id ORDER BY points DESC, total DESC, s.full_name",
             (start, end),
         )
 

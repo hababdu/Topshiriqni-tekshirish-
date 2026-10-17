@@ -4,7 +4,7 @@ Telegram guruhda o'qiydigan o'quvchilar uchun uy vazifalarini qabul qiluvchi va 
 
 ## Imkoniyatlar
 
-- **O'quvchi**: guruh a'zosi ekanini bot tekshiradi, ism-familiya bilan ro'yxatdan o'tadi, vazifani tanlab **video / PDF / rasm / ovoz / matn** yuboradi (bir hafta davomida istalgancha).
+- **O'quvchi**: guruh a'zosi ekanini bot tekshiradi, `/start` bosganda Telegram ismi bilan avtomatik ro'yxatdan o'tadi, vazifani tanlab **video / PDF / rasm / ovoz / matn** yuboradi (bir hafta davomida istalgancha).
 - **Yopiq kanal = server**: har bir topshirilgan ish avtomatik yopiq Telegram kanalga nusxalanadi (kim, qaysi vazifa, qachon — izoh bilan). Kanal fayllar ombori vazifasini bajaradi.
 - **Admin (o'qituvchi)**: yangi vazifa qo'shadi (guruhga e'lon bo'ladi), ishlarni birma-bir ko'rib **0–10 ball** qo'yadi. O'quvchiga baho haqida xabar boradi.
 - **Statistika va diagramma**: haftalik hisobot (reyting + diagramma), o'quvchi o'z natijasi va 8 haftalik o'sish grafigini ko'radi.
@@ -22,6 +22,23 @@ Telegram guruhda o'qiydigan o'quvchilar uchun uy vazifalarini qabul qiluvchi va 
 | O'quvchi | `/start` | ro'yxatdan o'tish / menyu |
 
 O'quvchi menyusi: **📤 Vazifa topshirish**, **📋 Vazifalar**, **📊 Mening natijam**.
+
+## O'quvchilar ro'yxati = guruh a'zolari
+
+Telegram Bot API guruh a'zolarining to'liq ro'yxatini bermaydi, shuning uchun bot a'zolarni o'zi yig'adi: guruhga qo'shilganda/chiqqanda, guruhda yozganda va botga `/start` bosganda. Guruhdan chiqqanlar avtomatik ro'yxatdan olib tashlanadi (har kuni 03:00 va ishga tushganda ham tekshiriladi). Adminlar (`ADMIN_IDS`) o'quvchi sifatida hisoblanmaydi.
+
+**Muhim:** bot guruhda **administrator** bo'lishi kerak, aks holda a'zolik o'zgarishlarini va xabarlarni ko'rmaydi.
+
+## 🟢 / 🔴 holat va filtr
+
+- **Admin → 👥 O'quvchilar**: har bir o'quvchi 🟢 (topshirgan) yoki 🔴 (topshirmagan). Tugmalar bilan filtr: vazifa bo'yicha (hamma / alohida) va holat bo'yicha (hamma / 🟢 / 🔴). ⚠️ — o'quvchi botga hali `/start` bosmagan.
+- **O'quvchi → 📋 Vazifalar** va **📤 Vazifa topshirish**: har bir vazifa 🟢 topshirilgan yoki 🔴 topshirilmagan.
+
+## Render (bepul tarif) da uxlab qolmasligi uchun
+
+Render bepul Web Service ga 15 daqiqa HTTP so'rov kelmasa uni uxlatadi. Bot har 5 daqiqada (`KEEPALIVE_MINUTES`) o'z `RENDER_EXTERNAL_URL/health` manziliga so'rov yuboradi. Qo'shimcha kafolat uchun [UptimeRobot](https://uptimerobot.com) yoki cron-job.org da `https://NOM.onrender.com/health` ni har 5 daqiqada tekshiradigan monitor qo'ying (u server allaqachon uxlab qolgan bo'lsa ham uyg'otadi).
+
+> ⚠️ Render bepul tarifida fayl tizimi doimiy emas: qayta deploy/restart bo'lganda `data/bot.db` o'chib ketadi. Doimiy disk (pullik) yoki tashqi baza kerak.
 
 ## O'rnatish
 

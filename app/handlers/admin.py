@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import BaseFilter, Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -18,10 +18,11 @@ from ..keyboards import (
     A_STUDENTS,
     A_TASK,
     admin_kb,
+    board_kb,
     grade_kb,
     report_kb,
 )
-from ..texts import bar, esc, kv, quote, score_badge, split_lines, title
+from ..texts import bar, esc, hint, kv, quote, score_badge, split_lines, title
 from ..timeutil import today, week_range, week_start
 
 
@@ -238,15 +239,92 @@ async def report_to_group(c: CallbackQuery, db: DB, cfg: Config, bot: Bot):
         await c.answer("Guruhga yuborib bo'lmadi", show_alert=True)
 
 
+# ---------- o'quvchilar: 🟢 topshirgan / 🔴 topshirmagan + filtr ----------
+def _fmt_score(v: float | None) -> str:
+    return "⏳" if v is None else f"{round(v, 1):g}/10"
+
+
+def _fit(lines: list[str]) -> str:
+    parts = split_lines(lines)
+    text = parts[0]
+    if len(parts) > 1:
+        text += "\n<i>… ro'yxat uzun, filtrdan foydalaning</i>"
+    return text
+
+
+async def build_board(db: DB, cfg: Config, task_id: int, status: str):
+    ws = week_start(today(cfg.timezone)).isoformat()
+    tasks = await db.tasks_for_week(ws)
+    roster = await db.all_students()
+    if not roster:
+        return (
+            "📭 Hali o'quvchilar yo'q.\n"
+            + hint("Guruh a'zolari guruhda yozgach yoki botga /start bosgach shu yerda paydo bo'ladi."),
+            None,
+        )
+    if not tasks:
+        lines = [title("👥", f"O'quvchilar · {len(roster)} ta")]
+        lines += [
+            f"<code>{i:>2}.</code> {esc(r['full_name'])}{'' if r['started'] else ' ⚠️'}"
+            for i, r in enumerate(roster, 1)
+        ]
+        lines += ["", "📭 Bu hafta uchun hali vazifa berilmagan.", hint("⚠️ — botga /start bosmagan")]
+        return _fit(lines), None
+
+    ids = [t["id"] for t in tasks]
+    if task_id not in ids:
+        task_id = 0
+    if status not in ("a", "g", "r"):
+        status = "a"
+    subs = await db.week_submissions(ws)
+
+    entries = []
+    for s in roster:
+        done = subs.get(s["user_id"], {})
+        ok = (task_id in done) if task_id else all(i in done for i in ids)
+        entries.append((s, ok, done))
+    n_ok = sum(1 for _, ok, _ in entries if ok)
+    n_bad = len(entries) - n_ok
+    shown = [e for e in entries if status == "a" or (status == "g" and e[1]) or (status == "r" and not e[1])]
+
+    scope = next(t["title"] for t in tasks if t["id"] == task_id) if task_id else "Hamma vazifalar"
+    lines = [
+        title("👥", f"O'quvchilar · {len(roster)} ta"),
+        kv("📌", "Vazifa", scope),
+        f"{kv('🟢', 'Topshirgan', n_ok, code=True)}   {kv('🔴', 'Topshirmagan', n_bad, code=True)}",
+    ]
+    if not task_id and len(tasks) > 1:
+        lines.append("")
+        lines += [f"<code>{i}</code> {esc(t['title'])}" for i, t in enumerate(tasks, 1)]
+    lines.append("")
+    if not shown:
+        lines.append(hint("Bu filtrda hech kim yo'q."))
+    for s, ok, done in shown:
+        extra = ""
+        if task_id and ok:
+            extra = f" · <code>{_fmt_score(done[task_id])}</code>"
+        elif not task_id and len(ids) > 1:
+            extra = "  " + "".join("🟢" if i in done else "🔴" for i in ids)
+        warn = "" if s["started"] else " ⚠️"
+        lines.append(f"{'🟢' if ok else '🔴'} <b>{esc(s['full_name'])}</b>{extra}{warn}")
+    lines += ["", hint("⚠️ — botga /start bosmagan (eslatma ola olmaydi)")]
+    return _fit(lines), board_kb(tasks, task_id, status)
+
+
 @router.message(Command("oquvchilar"))
 @router.message(F.text == A_STUDENTS)
-async def students(m: Message, state: FSMContext, db: DB):
+async def students(m: Message, state: FSMContext, db: DB, cfg: Config):
     await state.clear()
-    rows = await db.all_students()
-    if not rows:
-        await m.answer("📭 Hali o'quvchilar yo'q.")
-        return
-    lines = [title("👥", f"O'quvchilar · {len(rows)} ta")]
-    lines += [f"<code>{i:>2}.</code> {esc(r['full_name'])}" for i, r in enumerate(rows, 1)]
-    for part in split_lines(lines):
-        await m.answer(part)
+    text, kb = await build_board(db, cfg, 0, "a")
+    await m.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("sb:"))
+async def board_cb(c: CallbackQuery, db: DB, cfg: Config):
+    _, task_s, status = c.data.split(":")
+    text, kb = await build_board(db, cfg, int(task_s), status)
+    try:
+        await c.message.edit_text(text, reply_markup=kb)
+    except TelegramBadRequest:  # "message is not modified"
+        pass
+    await c.answer()

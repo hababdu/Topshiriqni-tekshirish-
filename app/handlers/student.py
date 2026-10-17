@@ -20,7 +20,8 @@ from ..keyboards import (
     main_kb,
     tasks_kb,
 )
-from ..texts import LINE, bar, esc, hint, kv, quote, title
+from ..roster import in_group
+from ..texts import LINE, bar, esc, hint, kv, quote, score_badge, title
 from ..timeutil import today, week_range, week_start
 
 log = logging.getLogger(__name__)
@@ -28,22 +29,8 @@ router = Router()
 router.message.filter(F.chat.type == "private")
 
 
-class Reg(StatesGroup):
-    name = State()
-
-
 class Submit(StatesGroup):
     sending = State()
-
-
-async def in_group(bot: Bot, group_id: int, user_id: int) -> bool:
-    try:
-        member = await bot.get_chat_member(group_id, user_id)
-    except TelegramAPIError:
-        return False
-    if member.status in ("member", "administrator", "creator"):
-        return True
-    return member.status == "restricted" and getattr(member, "is_member", False)
 
 
 def extract(m: Message) -> tuple[str, str | None, str | None] | None:
@@ -69,45 +56,30 @@ def extract(m: Message) -> tuple[str, str | None, str | None] | None:
 async def start(m: Message, state: FSMContext, db: DB, cfg: Config, bot: Bot):
     await state.clear()
     uid = m.from_user.id
-    student = await db.get_student(uid)
-    if student:
-        await m.answer(
-            f"{title('👋', 'Xush kelibsiz!')}\n"
-            f"<b>{esc(student['full_name'])}</b>, quyidagi menyudan tanlang 👇",
-            reply_markup=main_kb(),
-        )
-        return
     if not await in_group(bot, cfg.group_id, uid):
+        await db.mark_left(uid)
         await m.answer(
             f"{title('🔒', 'Kirish yopiq')}\n"
             "Bu bot faqat guruh o'quvchilari uchun.\n"
             "Avval o'quv guruhiga qo'shiling, keyin /start ni qayta bosing."
         )
         return
-    await m.answer(
-        f"{title('👋', 'Assalomu alaykum!')}\n"
-        "Ro'yxatdan o'tish uchun <b>ism-familiyangizni</b> yozing:"
+    existing = await db.get_student(uid)
+    student = await db.register_started(uid, m.from_user.full_name, m.from_user.username)
+    head = (
+        title("👋", "Xush kelibsiz!")
+        if existing and existing["started"]
+        else title("✅", "Roʻyxatdan oʻtdingiz")
     )
-    await state.set_state(Reg.name)
-
-
-@router.message(Reg.name, F.text)
-async def reg_name(m: Message, state: FSMContext, db: DB):
-    name = m.text.strip()[:80]
-    if len(name) < 3:
-        await m.answer("⚠️ Iltimos, <b>to'liq ism-familiyangizni</b> yozing.")
-        return
-    await db.add_student(m.from_user.id, name, m.from_user.username)
-    await state.clear()
     await m.answer(
-        f"{title('✅', 'Roʻyxatdan oʻtdingiz')}\n"
-        f"👤 <b>{esc(name)}</b>\n\nMenyudan foydalaning 👇",
+        f"{head}\n<b>{esc(student['full_name'])}</b>, quyidagi menyudan tanlang 👇",
         reply_markup=main_kb(),
     )
 
 
 async def _ensure_student(m: Message, db: DB) -> bool:
-    if await db.get_student(m.from_user.id):
+    s = await db.get_student(m.from_user.id)
+    if s and s["in_group"] and s["started"]:
         return True
     await m.answer("⚠️ Avval /start orqali ro'yxatdan o'ting.")
     return False
@@ -123,13 +95,26 @@ async def show_tasks(m: Message, state: FSMContext, db: DB, cfg: Config):
     if not tasks:
         await m.answer("📭 Bu hafta uchun hali vazifa berilmagan.")
         return
+    mine = (await db.week_submissions(ws)).get(m.from_user.id, {})
     blocks = []
     for i, t in enumerate(tasks, 1):
-        block = f"<b>{i}. {esc(t['title'])}</b>"
+        if t["id"] in mine:
+            sc = mine[t["id"]]
+            res = "⏳ tekshirilmoqda" if sc is None else score_badge(int(round(sc)))
+            block = f"🟢 <b>{i}. {esc(t['title'])}</b>\n└ topshirilgan · {res}"
+        else:
+            block = f"🔴 <b>{i}. {esc(t['title'])}</b>\n└ topshirilmagan"
         if t["description"]:
             block += "\n" + quote(t["description"])
         blocks.append(block)
-    await m.answer(title("📋", "Shu haftaning vazifalari") + "\n" + "\n\n".join(blocks))
+    done_n = sum(1 for t in tasks if t["id"] in mine)
+    await m.answer(
+        title("📋", "Shu haftaning vazifalari")
+        + "\n"
+        + kv("📤", "Topshirilgan", f"{done_n}/{len(tasks)}", code=True)
+        + "\n\n"
+        + "\n\n".join(blocks)
+    )
 
 
 @router.message(F.text == BTN_SUBMIT)
@@ -142,9 +127,11 @@ async def choose_task(m: Message, state: FSMContext, db: DB, cfg: Config):
     if not tasks:
         await m.answer("📭 Bu hafta uchun hali vazifa berilmagan.")
         return
+    mine = (await db.week_submissions(ws)).get(m.from_user.id, {})
     await m.answer(
-        f"{title('📤', 'Vazifa topshirish')}\nQaysi vazifani topshirasiz? 👇",
-        reply_markup=tasks_kb(tasks),
+        f"{title('📤', 'Vazifa topshirish')}\nQaysi vazifani topshirasiz? 👇\n"
+        f"{hint('🟢 topshirilgan · 🔴 topshirilmagan')}",
+        reply_markup=tasks_kb(tasks, set(mine)),
     )
 
 
