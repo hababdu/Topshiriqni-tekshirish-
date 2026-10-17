@@ -3,6 +3,8 @@ import logging
 import os
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 from aiogram.fsm.storage.memory import MemoryStorage
 
@@ -47,13 +49,28 @@ async def setup_commands(bot: Bot, cfg) -> None:
             logging.getLogger(__name__).warning("Admin menyusi o'rnatilmadi (%s): %s", admin_id, e)
 
 
+async def check_access(bot: Bot, cfg) -> None:
+    """Ishga tushganda guruh va kanalga kirish huquqini tekshirib, logga yozadi."""
+    log = logging.getLogger("check")
+    me = await bot.me()
+    for name, chat_id in (("GROUP_ID", cfg.group_id), ("STORAGE_CHANNEL_ID", cfg.storage_channel_id)):
+        try:
+            chat = await bot.get_chat(chat_id)
+            member = await bot.get_chat_member(chat_id, me.id)
+            log.info("%s OK: «%s», bot holati: %s", name, chat.title, member.status)
+            if name == "STORAGE_CHANNEL_ID" and member.status != "administrator":
+                log.error("%s: bot kanalda administrator EMAS — xabar yubora olmaydi!", name)
+        except Exception as e:
+            log.error("%s=%s ga kirib bo'lmadi: %s", name, chat_id, e)
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = load_config()
     db = DB(cfg.db_path)
     await db.init()
 
-    bot = Bot(cfg.bot_token)
+    bot = Bot(cfg.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
     dp["db"] = db
     dp["cfg"] = cfg
@@ -64,6 +81,7 @@ async def main() -> None:
     scheduler = setup_scheduler(bot, db, cfg)
     scheduler.start()
 
+    await check_access(bot, cfg)
     await setup_commands(bot, cfg)
     await start_health_server()
     await bot.delete_webhook(drop_pending_updates=True)

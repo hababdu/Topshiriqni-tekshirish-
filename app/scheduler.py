@@ -8,6 +8,8 @@ from apscheduler.triggers.cron import CronTrigger
 
 from .config import Config
 from .db import DB
+from .keyboards import A_REPORT, A_REVIEW, BTN_SUBMIT
+from .texts import esc, kv, title
 from .timeutil import today, week_start
 
 log = logging.getLogger(__name__)
@@ -26,8 +28,9 @@ async def remind_students(bot: Bot, db: DB, cfg: Config) -> None:
         try:
             await bot.send_message(
                 s["user_id"],
-                f"⏰ {s['full_name']}, bugun hali vazifa topshirmadingiz!\n"
-                "«📤 Vazifa topshirish» tugmasini bosib ishingizni yuboring.",
+                f"{title('⏰', 'Eslatma')}\n"
+                f"<b>{esc(s['full_name'])}</b>, bugun hali vazifa topshirmadingiz!\n\n"
+                f"Menyudan <b>{esc(BTN_SUBMIT)}</b> tugmasini bosib ishingizni yuboring 👇",
             )
             sent += 1
         except TelegramAPIError as e:
@@ -43,7 +46,10 @@ async def week_end_notice(bot: Bot, db: DB, cfg: Config) -> None:
         try:
             await bot.send_message(
                 admin_id,
-                f"📅 Hafta tugadi. Tekshirilmagan ishlar: {n} ta.\n/tekshir — baholashni boshlash, /hisobot — statistika.",
+                f"{title('📅', 'Hafta tugadi')}\n"
+                f"{kv('📬', 'Tekshirilmagan ishlar', n, code=True)}\n\n"
+                f"<b>{esc(A_REVIEW)}</b> — baholashni boshlash\n"
+                f"<b>{esc(A_REPORT)}</b> — statistika",
             )
         except TelegramAPIError as e:
             log.warning("Adminga xabar yuborilmadi (%s): %s", admin_id, e)
