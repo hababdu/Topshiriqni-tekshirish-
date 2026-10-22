@@ -7,6 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
+from .. import channel
 from ..charts import progress_chart
 from ..config import Config
 from ..db import DB
@@ -171,8 +172,12 @@ async def receive_work(m: Message, state: FSMContext, db: DB, cfg: Config, bot: 
     kind, file_id, text = data
     task_id = (await state.get_data())["task_id"]
     student = await db.get_student(m.from_user.id)
+    if channel.waiting() >= 2:
+        await m.answer("⏳ <b>Navbatda…</b> Ishingiz saqlanmoqda, biroz kuting.")
     try:
-        copied = await bot.copy_message(cfg.storage_channel_id, m.chat.id, m.message_id)
+        copied = await channel.call(
+            lambda: bot.copy_message(cfg.storage_channel_id, m.chat.id, m.message_id)
+        )
     except TelegramAPIError as e:
         log.error("Kanalga nusxalab bo'lmadi (STORAGE_CHANNEL_ID=%s): %s", cfg.storage_channel_id, e)
         for admin_id in cfg.admin_ids:
@@ -193,17 +198,19 @@ async def receive_work(m: Message, state: FSMContext, db: DB, cfg: Config, bot: 
         m.from_user.id, task_id, kind, text, file_id, copied.message_id, day.isoformat()
     )
     task = await db.get_task(task_id)
-    try:
-        await bot.send_message(
-            cfg.storage_channel_id,
-            f"📥 <b>Ish #{sub_id}</b>\n{LINE}\n"
-            f"{kv('👤', 'Oʻquvchi', student['full_name'])}\n"
-            f"{kv('📝', 'Vazifa', task['title'])}\n"
-            f"{kv('🗓', 'Sana', day.isoformat(), code=True)}",
-            reply_to_message_id=copied.message_id,
+    # Kanaldagi "Ish #..." kartasi — fonda yuboriladi (o'quvchi kutib qolmasligi uchun)
+    channel.spawn(
+        channel.call(
+            lambda: bot.send_message(
+                cfg.storage_channel_id,
+                f"📥 <b>Ish #{sub_id}</b>\n{LINE}\n"
+                f"{kv('👤', 'Oʻquvchi', student['full_name'])}\n"
+                f"{kv('📝', 'Vazifa', task['title'])}\n"
+                f"{kv('🗓', 'Sana', day.isoformat(), code=True)}",
+                reply_to_message_id=copied.message_id,
+            )
         )
-    except TelegramAPIError:
-        pass
+    )
     await m.answer(f"✅ <b>Qabul qilindi</b> · <code>#{sub_id}</code>")
 
 

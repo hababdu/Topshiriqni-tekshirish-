@@ -44,6 +44,10 @@ Render bepul xizmatida fayl tizimi doimiy emas, shuning uchun baza **Neon**'da t
 
 **Uxlab qolmasligi:** Render 15 daqiqa HTTP so'rov bo'lmasa serverni uxlatadi. Bot har 5 daqiqada o'z `RENDER_EXTERNAL_URL/health` manziliga so'rov yuboradi. Qo'shimcha kafolat uchun [UptimeRobot](https://uptimerobot.com) da `https://NOM.onrender.com/health` ga 5 daqiqalik monitor qo'ying (server allaqachon uxlab qolgan bo'lsa ham uyg'otadi).
 
+## Kanalga yozish tezligi (flood control)
+
+Telegram bitta chatga daqiqasiga ~20 xabarga ruxsat beradi. Bot saqlash kanaliga yozishni navbatga qo'yadi (`app/channel.py`): yozuvlar orasida ~3 soniya tanaffus, Telegram «retry after» desa — shuncha kutib qayta urinish. Navbat uzun bo'lsa, o'quvchiga «⏳ Navbatda…» xabari chiqadi.
+
 ## Zaxira va tiklash
 
 - Har kuni `BACKUP_HOUR`:30 da bazaning to'liq nusxasi (`zaxira_….json.gz`) yopiq kanalga yuboriladi.
