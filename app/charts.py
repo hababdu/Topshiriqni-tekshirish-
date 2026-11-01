@@ -137,3 +137,32 @@ def overall_progress_chart(submitted: int, missing: int, title: str) -> bytes:
         ax.set_ylim(-1, 1)
     ax.set_aspect("equal")
     return _save(fig)
+
+
+def progress_chart(series: list[tuple[str, float]], title: str) -> bytes:
+    """O'quvchining haftalar bo'yicha o'rtacha ball dinamikasi."""
+    labels = [str(item[0]) for item in series]
+    values = [float(item[1]) for item in series]
+    fig, ax = plt.subplots(figsize=(8.5, 4.8))
+    fig.subplots_adjust(left=.12, right=.95, top=.82, bottom=.20)
+    fig.text(.07, .94, "SHAXSIY NATIJALAR", fontsize=16, weight="bold", color=INK)
+    fig.text(.07, .885, title, fontsize=9, color=MUTED)
+    if values:
+        ax.plot(range(len(values)), values, color=BLUE, linewidth=2.5, marker="o",
+                markersize=6, markerfacecolor=BG, markeredgewidth=2)
+        ax.set_xticks(range(len(labels)), labels)
+        ax.set_ylim(0, MAX_SCORE + .7)
+        ax.set_ylabel("O'rtacha baho (10 balldan)", color=MUTED, fontsize=9)
+        ax.set_xlim(-.25, max(.25, len(values) - .75))
+        for i, value in enumerate(values):
+            ax.annotate(f"{value:.1f}", (i, value), xytext=(0, 9),
+                        textcoords="offset points", ha="center", fontsize=9,
+                        color=INK, weight="bold")
+        _style(ax)
+        ax.grid(axis="y", color=GRID, linewidth=.8)
+        ax.grid(axis="x", visible=False)
+    else:
+        ax.axis("off")
+        ax.text(.5, .5, "Hozircha baholangan natijalar yo'q", ha="center",
+                va="center", color=MUTED, fontsize=12)
+    return _save(fig)
