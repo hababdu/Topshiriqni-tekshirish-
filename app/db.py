@@ -398,6 +398,8 @@ class DB:
 
     async def grade_many(self, sub_ids: list[int], score: int) -> None:
         """Bir o'quvchining bir vazifadagi hamma fayllariga bitta baho qo'yadi."""
+        if isinstance(score, bool) or not isinstance(score, int) or not 0 <= score <= 10:
+            raise ValueError("Baho 0 dan 10 gacha butun son bo'lishi kerak")
         if not sub_ids:
             return
         ids = ",".join(str(int(i)) for i in sub_ids)
@@ -459,7 +461,8 @@ class DB:
             "  WHERE submit_date>=? AND submit_date<? AND returned=0 GROUP BY user_id, task_id"
             ") x ON x.user_id=s.user_id "
             "WHERE s.in_group=1" + self._not_hidden("s.user_id") +
-            " GROUP BY s.user_id, s.full_name ORDER BY points DESC, total DESC, s.full_name",
+            " GROUP BY s.user_id, s.full_name "
+            "ORDER BY points DESC, avg_score DESC, graded DESC, s.full_name",
             (start, end),
         )
         for r in rows:

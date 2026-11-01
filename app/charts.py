@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 MAX_SCORE = 10
 BAR = "#2f6fdb"
+GREEN = "#239b72"
+RED = "#d9534f"
 GRID = "#d9dde3"
 
 
@@ -17,30 +19,65 @@ def _to_png(fig) -> bytes:
     return buf.getvalue()
 
 
-def weekly_chart(rows: list[dict], title: str) -> bytes:
-    """O'quvchilar bo'yicha haftalik o'rtacha ball (gorizontal diagramma)."""
-    rows = rows[:25]
-    names = [r["full_name"] for r in rows][::-1]
-    avgs = [float(r["avg_score"]) if r["avg_score"] is not None else 0.0 for r in rows][::-1]
-    totals = [r["total"] for r in rows][::-1]
+def weekly_chart(rows: list[dict], title: str, task_stats: list[tuple[str, int, int]] | None = None) -> bytes:
+    """Admin uchun: baholangan o'quvchilar reytingi va vazifalar kesimida topshirish holati."""
+    ranked = [r for r in rows if r.get("graded", 0) > 0 and r.get("avg_score") is not None][:15]
+    ranked = ranked[::-1]
 
-    fig, ax = plt.subplots(figsize=(8, max(3.0, 0.45 * len(names) + 1.6)))
-    bars = ax.barh(names, avgs, color=BAR)
-    ax.set_xlim(0, MAX_SCORE + 2)
-    ax.set_xlabel(f"O'rtacha ball (0–{MAX_SCORE})")
-    ax.set_title(title, fontsize=12, loc="left")
+    if task_stats:
+        fig, (ax, bx) = plt.subplots(
+            1, 2, figsize=(15, max(4.2, 0.38 * max(len(ranked), len(task_stats)) + 2.0)),
+            gridspec_kw={"width_ratios": [1.0, 1.15]},
+        )
+    else:
+        fig, ax = plt.subplots(figsize=(8, max(3.0, 0.4 * len(ranked) + 1.8)))
+        bx = None
+
+    if ranked:
+        names = [r["full_name"][:24] for r in ranked]
+        avgs = [float(r["avg_score"]) for r in ranked]
+        bars = ax.barh(names, avgs, color=BAR)
+        ax.set_xlim(0, MAX_SCORE + 2)
+        ax.set_xlabel(f"O'rtacha ball (0–{MAX_SCORE})")
+        for bar, avg, r in zip(bars, avgs, ranked):
+            ax.text(bar.get_width() + 0.12, bar.get_y() + bar.get_height()/2,
+                    f"{avg:.1f} · {r['graded']} ta baho", va="center", fontsize=8)
+    else:
+        ax.text(0.5, 0.5, "Hali baholangan ish yo'q", ha="center", va="center", transform=ax.transAxes)
+        ax.set_xticks([])
+        ax.set_yticks([])
+    ax.set_title("Eng yaxshi o'quvchilar", fontsize=11, loc="left")
     ax.grid(axis="x", color=GRID)
     ax.set_axisbelow(True)
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
-    for bar, avg, total in zip(bars, avgs, totals):
-        ax.text(
-            bar.get_width() + 0.15,
-            bar.get_y() + bar.get_height() / 2,
-            f"{avg:.1f} · {total} ta ish",
-            va="center",
-            fontsize=8,
-        )
+
+    if bx is not None:
+        if task_stats:
+            labels = [x[0][:22] for x in task_stats]
+            done = [x[1] for x in task_stats]
+            missing = [x[2] for x in task_stats]
+            positions = list(range(len(labels)))
+            bx.barh(positions, done, color=GREEN, label="Topshirgan")
+            bx.barh(positions, missing, left=done, color=RED, label="Topshirmagan")
+            bx.set_yticks(positions, labels)
+            bx.invert_yaxis()
+            bx.set_xlabel("O'quvchilar soni")
+            bx.legend(loc="lower right", fontsize=8)
+            bx.grid(axis="x", color=GRID)
+            bx.set_axisbelow(True)
+            for i, (d, m) in enumerate(zip(done, missing)):
+                total = d + m
+                if total:
+                    bx.text(d + m + 0.08, i, f"{d}/{total}", va="center", fontsize=8)
+        else:
+            bx.text(0.5, 0.5, "Bu davrda vazifa berilmagan", ha="center", va="center", transform=bx.transAxes)
+        bx.set_title("Vazifalar bajarilishi", fontsize=11, loc="left")
+        for spine in ("top", "right"):
+            bx.spines[spine].set_visible(False)
+
+    fig.suptitle(title, fontsize=13, x=0.06, ha="left")
+    fig.tight_layout()
     return _to_png(fig)
 
 

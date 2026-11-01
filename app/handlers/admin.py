@@ -333,7 +333,14 @@ async def grade_cb(c: CallbackQuery, state: FSMContext, db: DB, cfg: Config, bot
             f"{hint('Sababsiz qaytarish uchun «-» yuboring. Bekor qilish: «❌ Bekor qilish».')}"
         )
         return
-    score = int(value)
+    try:
+        score = int(value)
+    except (TypeError, ValueError):
+        await c.answer("Noto'g'ri baho", show_alert=True)
+        return
+    if not 0 <= score <= 10:
+        await c.answer("Baho 0 dan 10 gacha bo'lishi kerak", show_alert=True)
+        return
     await db.grade_many([f["id"] for f in group], score)
     await c.message.edit_text(
         review_card(sub, f"✅ <b>Baho:</b> {score_badge(score)}\n{bar(score)}", len(group))
@@ -391,31 +398,67 @@ async def return_reason(m: Message, state: FSMContext, db: DB, cfg: Config, bot:
 async def build_report(db: DB, cfg: Config, offset: int) -> tuple[list[str], bytes]:
     start, end = week_range(today(cfg.timezone), offset)
     rows = await db.week_stats(start, end)
+    tasks = await db.tasks_for_week(start)
+    roster = await db.all_students()
+    submitted_map = await db.week_submissions(start)
     last_day = date.fromisoformat(end) - timedelta(days=1)
     period = f"{date.fromisoformat(start):%d.%m} – {last_day:%d.%m}"
 
     active = sum(1 for r in rows if r["total"] > 0)
-    medals = ["🥇", "🥈", "🥉"]
+    graded_students = [r for r in rows if r["graded"] > 0]
+    submitted_slots = sum(
+        1 for student in roster
+        for task in tasks
+        if task["id"] in submitted_map.get(student["user_id"], {})
+    )
+    total_slots = len(roster) * len(tasks)
+    missing_slots = max(0, total_slots - submitted_slots)
+    task_stats = []
+    for task in tasks:
+        done = sum(
+            1 for student in roster
+            if task["id"] in submitted_map.get(student["user_id"], {})
+        )
+        task_stats.append((task["title"], done, max(0, len(roster) - done)))
+
     lines = [
         title("📊", f"Haftalik natijalar · {period}"),
         kv("👥", "Faol o'quvchilar", f"{active}/{len(rows)}", code=True),
+        kv("📚", "Vazifalar soni", len(tasks), code=True),
+        kv("🟢", "Topshirilgan vazifa-o'quvchi", submitted_slots, code=True),
+        kv("🔴", "Topshirilmagan vazifa-o'quvchi", missing_slots, code=True),
+        kv("⭐", "Baholangan o'quvchilar", len(graded_students), code=True),
         "",
     ]
-    for i, r in enumerate(rows):
-        mark = medals[i] if i < 3 and r["total"] > 0 else f"<code>{i + 1:>2}.</code>"
-        avg = r["avg_score"]
-        avg_txt = f"{avg:.1f}" if avg is not None else "—"
-        lines.append(f"{mark} <b>{esc(r['full_name'])}</b>")
-        lines.append(
-            f"      📤 <code>{r['total']}</code>  ⭐️ <code>{avg_txt}</code>  🏅 <code>{r['points']}</code>  {bar(avg, 5)}"
-        )
+    if graded_students:
+        lines.append("<b>🏆 Eng yaxshi o'quvchilar</b>")
+        medals = ["🥇", "🥈", "🥉"]
+        for i, r in enumerate(graded_students[:10]):
+            avg = r["avg_score"]
+            avg_txt = f"{avg:.1f}" if avg is not None else "—"
+            mark = medals[i] if i < 3 else f"<code>{i + 1:>2}.</code>"
+            lines.append(
+                f"{mark} <b>{esc(r['full_name'])}</b>\n"
+                f"      ⭐️ <code>{avg_txt}/10</code>  🏅 <code>{r['points']}</code>  "
+                f"📤 <code>{r['total']}</code> ta topshirgan"
+            )
+    else:
+        lines.append("🏆 <b>Hali baholangan topshiriqlar yo'q.</b>")
+
     silent = [r["full_name"] for r in rows if r["total"] == 0]
     if silent:
         lines += ["", "❗ <b>Hech narsa topshirmaganlar:</b>"]
-        lines += [f"• {esc(n)}" for n in silent]
-    lines += ["", "<i>📤 ishlar · ⭐️ o'rtacha ball · 🏅 jami ball</i>"]
-    return split_lines(lines), weekly_chart(rows, f"Haftalik natijalar ({period})")
-
+        lines += [f"• {esc(n)}" for n in silent[:30]]
+        if len(silent) > 30:
+            lines.append(f"… va yana {len(silent) - 30} nafar")
+    lines += [
+        "",
+        "<i>📤 topshirilgan ishlar · ⭐️ o'rtacha baho · 🏅 jami ball</i>",
+        "<i>🔴 qaytarilgan yoki topshirilmagan ish qayta topshirilmaguncha bajarilgan hisoblanmaydi.</i>",
+    ]
+    return split_lines(lines), weekly_chart(
+        rows, f"Haftalik natijalar ({period})", task_stats=task_stats
+    )
 
 async def send_report(bot: Bot, chat_id: int, parts: list[str], png: bytes, markup=None) -> None:
     await bot.send_photo(chat_id, BufferedInputFile(png, "hisobot.png"))
