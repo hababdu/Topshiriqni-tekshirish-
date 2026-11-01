@@ -5,10 +5,10 @@ from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import BaseFilter, Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BufferedInputFile, CallbackQuery, Message, TelegramObject
+from aiogram.types import BufferedInputFile, InputMediaPhoto, CallbackQuery, Message, TelegramObject
 
 from ..backup import parse_backup, send_backup
-from ..charts import weekly_chart
+from ..charts import lesson_completion_chart, overall_progress_chart, ranking_chart
 from ..config import Config
 from ..db import DB
 from ..export import PERIODS, build_stats_xlsx
@@ -395,7 +395,7 @@ async def return_reason(m: Message, state: FSMContext, db: DB, cfg: Config, bot:
 
 
 # ---------- hisobot ----------
-async def build_report(db: DB, cfg: Config, offset: int) -> tuple[list[str], bytes]:
+async def build_report(db: DB, cfg: Config, offset: int) -> tuple[list[str], list[bytes]]:
     start, end = week_range(today(cfg.timezone), offset)
     rows = await db.week_stats(start, end)
     tasks = await db.tasks_for_week(start)
@@ -456,12 +456,25 @@ async def build_report(db: DB, cfg: Config, offset: int) -> tuple[list[str], byt
         "<i>📤 topshirilgan ishlar · ⭐️ o'rtacha baho · 🏅 jami ball</i>",
         "<i>🔴 qaytarilgan yoki topshirilmagan ish qayta topshirilmaguncha bajarilgan hisoblanmaydi.</i>",
     ]
-    return split_lines(lines), weekly_chart(
-        rows, f"Haftalik natijalar ({period})", task_stats=task_stats
-    )
+    chart_title = f"Haftalik natijalar ({period})"
+    charts = [
+        ranking_chart(rows, chart_title),
+        lesson_completion_chart(task_stats, chart_title),
+        overall_progress_chart(submitted_slots, missing_slots, chart_title),
+    ]
+    return split_lines(lines), charts
 
-async def send_report(bot: Bot, chat_id: int, parts: list[str], png: bytes, markup=None) -> None:
-    await bot.send_photo(chat_id, BufferedInputFile(png, "hisobot.png"))
+
+async def send_report(bot: Bot, chat_id: int, parts: list[str], charts: list[bytes], markup=None) -> None:
+    # Uchta diagrammani bitta albom sifatida yuboramiz; Telegram media group limiti 2–10.
+    media = [
+        InputMediaPhoto(media=BufferedInputFile(png, f"hisobot-{i + 1}.png"))
+        for i, png in enumerate(charts[:3])
+    ]
+    if len(media) >= 2:
+        await bot.send_media_group(chat_id, media)
+    elif media:
+        await bot.send_photo(chat_id, media[0].media)
     for i, part in enumerate(parts):
         last = i == len(parts) - 1
         await bot.send_message(chat_id, part, reply_markup=markup if last else None)
@@ -477,16 +490,16 @@ async def report(m: Message, state: FSMContext, db: DB, cfg: Config, bot: Bot):
     if not students:
         await m.answer("📭 Hali o'quvchilar ro'yxatdan o'tmagan.")
         return
-    texts, png = await build_report(db, cfg, offset)
-    await send_report(bot, m.chat.id, texts, png, report_kb(offset))
+    texts, charts = await build_report(db, cfg, offset)
+    await send_report(bot, m.chat.id, texts, charts, report_kb(offset))
 
 
 @router.callback_query(F.data.startswith("rep:"))
 async def report_to_group(c: CallbackQuery, db: DB, cfg: Config, bot: Bot):
     offset = int(c.data.split(":")[1])
-    texts, png = await build_report(db, cfg, offset)
+    texts, charts = await build_report(db, cfg, offset)
     try:
-        await send_report(bot, cfg.group_id, texts, png)
+        await send_report(bot, cfg.group_id, texts, charts)
         await c.answer("Guruhga yuborildi ✅", show_alert=True)
     except TelegramAPIError:
         await c.answer("Guruhga yuborib bo'lmadi", show_alert=True)
