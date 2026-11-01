@@ -6,16 +6,33 @@ Telegram guruhda o'qiydigan o'quvchilar uchun uy vazifalarini qabul qiluvchi va 
 
 - **O'quvchi**: guruh a'zosi ekanini bot tekshiradi, `/start` bosganda Telegram ismi bilan avtomatik ro'yxatdan o'tadi, vazifani tanlab **video / PDF / rasm / ovoz / matn** yuboradi (bir hafta davomida istalgancha).
 - **Yopiq kanal = server**: har bir topshirilgan ish avtomatik yopiq Telegram kanalga nusxalanadi (kim, qaysi vazifa, qachon — izoh bilan). Kanal fayllar ombori vazifasini bajaradi.
-- **Admin (o'qituvchi)**: yangi vazifa qo'shadi (guruhga e'lon bo'ladi), ishlarni birma-bir ko'rib **0–10 ball** qo'yadi. O'quvchiga baho haqida xabar boradi.
-- **Statistika va diagramma**: haftalik hisobot (reyting + diagramma), o'quvchi o'z natijasi va 8 haftalik o'sish grafigini ko'radi.
+- **Admin (o'qituvchi)**: yangi vazifa qo'shadi (guruhga e'lon bo'ladi). Ishlarni **vazifa bo'yicha** tekshiradi — pastdagi «📝 Tekshirish» bo'limiga qarang. O'quvchiga baho haqida xabar boradi.
+- **Statistika va diagramma**: haftalik hisobot (reyting + diagramma), o'quvchi o'z natijasi va 8 haftalik o'sish grafigini ko'radi. Ball har **vazifa** uchun bir marta hisoblanadi — ko'p fayl yuborish ballni oshirmaydi.
 - **Eslatmalar**: har kuni belgilangan soatda o'sha kuni hech narsa topshirmagan o'quvchilarga bot eslatma yuboradi. Yakshanba kuni 20:00 da adminga tekshirish vaqti kelgani aytiladi.
+
+## 📝 Tekshirish (admin)
+
+**📝 Tekshirish** (yoki `/tekshir`) bosilganda vazifalar ro'yxati chiqadi. Har vazifada holat belgisi bor:
+
+| Belgi | Ma'nosi |
+|---|---|
+| ⏳ | tekshirilmagan ishlar bor |
+| 🟢 | hammasi tekshirilgan |
+| 🔁 | qaytarilgan, o'quvchi qayta topshirishi kerak |
+| ⚪ | hali ish topshirilmagan |
+
+Tepada **filtr** tugmalari: **⏳ Tekshirilmagan · 🟢 Tekshirilgan · 🔁 Qaytarilgan · 📚 Hammasi**. Vazifani bossangiz, uning paneli ochiladi: kim kutmoqda, kim tekshirilgan (ball bilan), kim qaytarilgan, kim topshirmagan; pastda **▶️ Tekshirishni boshlash** va **✏️ Baholanganlarni qayta ko'rish** tugmalari.
+
+Tekshirishda bir o'quvchining shu vazifadagi **hamma fayli birga** ko'rsatiladi va **bitta 0–10 ball** qo'yiladi. Qoniqarsiz ish uchun **↩️ Qaytarish** — sabab yoziladi (yoki `-`), o'quvchiga xabar boradi. Qaytarilgan ish statistikaga kirmaydi; o'quvchi qayta topshirgach yana tekshiruv navbatiga tushadi (o'tgan haftaning vazifasi bo'lsa ham). **⏭ O'tkazish** — o'quvchi navbatda qoladi.
+
+Ball har **vazifa** uchun bir marta hisoblanadi — ko'p fayl yuborish ballni oshirmaydi.
 
 ## Buyruqlar
 
 | Kim | Buyruq | Vazifasi |
 |---|---|---|
 | Admin | `/vazifa` | yangi vazifa qo'shish |
-| Admin | `/tekshir` | ishlarni ko'rib baholash |
+| Admin | `/tekshir` | vazifani tanlab tekshirish, filtr, qaytarish |
 | Admin | `/hisobot` , `/hisobot 1` | shu / o'tgan hafta statistikasi (guruhga yuborish tugmasi bor) |
 | Admin | `/oquvchilar` | ro'yxatdan o'tganlar |
 | Admin | `/bekor` | joriy amalni bekor qilish |

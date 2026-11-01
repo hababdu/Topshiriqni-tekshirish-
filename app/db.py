@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS submissions (
     submitted_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     score          INTEGER,
     graded_at      TIMESTAMP,
+    returned       INTEGER NOT NULL DEFAULT 0,
+    return_note    TEXT,
     FOREIGN KEY (user_id) REFERENCES students(user_id),
     FOREIGN KEY (task_id) REFERENCES tasks(id)
 );
@@ -54,7 +56,7 @@ TABLE_COLS = {
     "tasks": ["id", "title", "description", "week_start", "created_at"],
     "submissions": [
         "id", "user_id", "task_id", "kind", "text", "file_id", "storage_msg_id",
-        "submit_date", "submitted_at", "score", "graded_at",
+        "submit_date", "submitted_at", "score", "graded_at", "returned", "return_note",
     ],
 }
 TS_COLS = {"joined_at", "created_at", "submitted_at", "graded_at"}
@@ -129,6 +131,9 @@ class DB:
             )
             async with self.pool.acquire() as c:
                 await c.execute(SCHEMA.format(pk="BIGSERIAL PRIMARY KEY", big="BIGINT"))
+                # Eski bazalar uchun yangi ustunlar (qaytarish)
+                await c.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS returned INTEGER NOT NULL DEFAULT 0")
+                await c.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS return_note TEXT")
             log.info("Postgres (DATABASE_URL) ga ulandi")
             return
         folder = os.path.dirname(self.path)
@@ -143,6 +148,12 @@ class DB:
                 await c.execute("ALTER TABLE students ADD COLUMN in_group INTEGER NOT NULL DEFAULT 1")
             if "started" not in cols:
                 await c.execute("ALTER TABLE students ADD COLUMN started INTEGER NOT NULL DEFAULT 1")
+            cur = await c.execute("PRAGMA table_info(submissions)")
+            scols = {r[1] for r in await cur.fetchall()}
+            if "returned" not in scols:
+                await c.execute("ALTER TABLE submissions ADD COLUMN returned INTEGER NOT NULL DEFAULT 0")
+            if "return_note" not in scols:
+                await c.execute("ALTER TABLE submissions ADD COLUMN return_note TEXT")
             await c.commit()
         log.warning("DATABASE_URL yo'q — SQLite (%s) ishlatilyapti. Render'da bu fayl qayta ishga tushganda o'chadi!", self.path)
 
@@ -277,7 +288,7 @@ class DB:
         rows = await self._all(
             "SELECT sub.user_id, sub.task_id, AVG(sub.score) AS score "
             "FROM submissions sub JOIN tasks t ON t.id=sub.task_id "
-            "WHERE t.week_start=? GROUP BY sub.user_id, sub.task_id",
+            "WHERE t.week_start=? AND sub.returned=0 GROUP BY sub.user_id, sub.task_id",
             (week_start,),
         )
         out: dict[int, dict[int, float | None]] = {}
@@ -287,7 +298,7 @@ class DB:
 
     async def has_submission_on(self, user_id: int, day: date) -> bool:
         row = await self._one(
-            "SELECT 1 AS x FROM submissions WHERE user_id=? AND submit_date=? LIMIT 1",
+            "SELECT 1 AS x FROM submissions WHERE user_id=? AND submit_date=? AND returned=0 LIMIT 1",
             (user_id, day.isoformat()),
         )
         return row is not None
@@ -300,42 +311,167 @@ class DB:
             (sub_id,),
         )
 
-    async def next_pending(self, after_id: int = 0) -> dict | None:
-        return await self._one(
+    # --- tekshirish: vazifa bo'yicha, bir o'quvchining ishlari guruh bo'lib ---
+    # Holatlar (o'quvchi + vazifa uchun): pending (baholanmagan fayl bor) > graded > returned.
+    # Qaytarilgan (returned=1) fayllar hisobga kirmaydi; o'quvchi qayta topshirsa yangi fayllar paydo bo'ladi.
+    async def recent_tasks(self, limit: int = 40) -> list[dict]:
+        return await self._all("SELECT * FROM tasks ORDER BY id DESC LIMIT ?", (limit,))
+
+    async def tasks_by_ids(self, ids: list[int]) -> list[dict]:
+        if not ids:
+            return []
+        lst = ",".join(str(int(i)) for i in ids)
+        return await self._all(f"SELECT * FROM tasks WHERE id IN ({lst}) ORDER BY id")
+
+    async def task_states(self, task_ids: list[int]) -> dict[int, dict[int, dict]]:
+        """{task_id: {user_id: {name, in_group, state, avg}}}; state: pending | graded | returned."""
+        if not task_ids:
+            return {}
+        lst = ",".join(str(int(i)) for i in task_ids)
+        rows = await self._all(
+            "SELECT sub.task_id, sub.user_id, s.full_name, s.in_group, "
+            "SUM(CASE WHEN sub.returned=0 AND sub.score IS NULL THEN 1 ELSE 0 END) AS p, "
+            "SUM(CASE WHEN sub.returned=0 AND sub.score IS NOT NULL THEN 1 ELSE 0 END) AS g, "
+            "SUM(CASE WHEN sub.returned=1 THEN 1 ELSE 0 END) AS r, "
+            "AVG(CASE WHEN sub.returned=0 THEN sub.score END) AS avg "
+            "FROM submissions sub JOIN students s ON s.user_id=sub.user_id "
+            f"WHERE sub.task_id IN ({lst}) "
+            "GROUP BY sub.task_id, sub.user_id, s.full_name, s.in_group"
+        )
+        out: dict[int, dict[int, dict]] = {}
+        for r in rows:
+            state = "pending" if r["p"] else "graded" if r["g"] else "returned"
+            out.setdefault(r["task_id"], {})[r["user_id"]] = {
+                "name": r["full_name"], "in_group": r["in_group"], "state": state, "avg": r["avg"],
+            }
+        return out
+
+    async def next_pending(self, task_id: int = 0, after_id: int = 0, graded: bool = False) -> dict | None:
+        """Keyingi ish. graded=False — tekshirilmaganlar; graded=True — baholanganlarni qayta ko'rish.
+        task_id=0 — hamma vazifalar."""
+        if graded:
+            cond = (
+                "sub.returned=0 AND sub.score IS NOT NULL AND NOT EXISTS (SELECT 1 FROM submissions p "
+                "WHERE p.user_id=sub.user_id AND p.task_id=sub.task_id AND p.returned=0 AND p.score IS NULL)"
+            )
+        else:
+            cond = "sub.returned=0 AND sub.score IS NULL"
+        sql = (
             "SELECT sub.*, s.full_name, t.title AS task_title FROM submissions sub "
             "JOIN students s ON s.user_id=sub.user_id "
             "JOIN tasks t ON t.id=sub.task_id "
-            "WHERE sub.score IS NULL AND sub.id>? ORDER BY sub.id LIMIT 1",
-            (after_id,),
+            f"WHERE {cond} AND sub.id>?"
         )
+        args: tuple = (after_id,)
+        if task_id:
+            sql += " AND sub.task_id=?"
+            args += (task_id,)
+        return await self._one(sql + " ORDER BY sub.id LIMIT 1", args)
 
-    async def pending_count(self) -> int:
-        row = await self._one("SELECT COUNT(*) AS n FROM submissions WHERE score IS NULL")
+    async def pending_group(
+        self, user_id: int, task_id: int, upto_id: int | None = None, graded: bool = False
+    ) -> list[dict]:
+        """Bir o'quvchining bir vazifadagi fayllari (tekshirilmagan yoki baholangan), eskidan yangiga."""
+        cond = "score IS NOT NULL" if graded else "score IS NULL"
+        sql = (
+            "SELECT id, kind, storage_msg_id, submit_date, score FROM submissions "
+            f"WHERE user_id=? AND task_id=? AND returned=0 AND {cond}"
+        )
+        args: tuple = (user_id, task_id)
+        if upto_id is not None:
+            sql += " AND id<=?"
+            args += (upto_id,)
+        return await self._all(sql + " ORDER BY id", args)
+
+    async def pending_groups(self, task_id: int = 0) -> int:
+        """Tekshirilmagan (o'quvchi, vazifa) juftliklari soni."""
+        sql = "SELECT COUNT(*) AS n FROM (SELECT DISTINCT user_id, task_id FROM submissions WHERE returned=0 AND score IS NULL"
+        args: tuple = ()
+        if task_id:
+            sql += " AND task_id=?"
+            args = (task_id,)
+        row = await self._one(sql + ") x", args)
         return row["n"] if row else 0
 
-    async def grade(self, sub_id: int, score: int) -> None:
+    async def pending_count(self) -> int:
+        return await self.pending_groups(0)
+
+    async def grade_many(self, sub_ids: list[int], score: int) -> None:
+        """Bir o'quvchining bir vazifadagi hamma fayllariga bitta baho qo'yadi."""
+        if not sub_ids:
+            return
+        ids = ",".join(str(int(i)) for i in sub_ids)
         await self._run(
-            "UPDATE submissions SET score=?, graded_at=CURRENT_TIMESTAMP WHERE id=?",
-            (score, sub_id),
+            f"UPDATE submissions SET score=?, graded_at=CURRENT_TIMESTAMP WHERE id IN ({ids})",
+            (score,),
         )
+
+    async def grade(self, sub_id: int, score: int) -> None:
+        await self.grade_many([sub_id], score)
+
+    async def return_many(self, sub_ids: list[int], note: str | None) -> None:
+        """Ishni o'quvchiga qaytaradi (qoniqarsiz): baho olib tashlanadi, o'quvchi qayta topshiradi."""
+        if not sub_ids:
+            return
+        ids = ",".join(str(int(i)) for i in sub_ids)
+        await self._run(
+            f"UPDATE submissions SET returned=1, score=NULL, graded_at=NULL, return_note=? WHERE id IN ({ids})",
+            (note,),
+        )
+
+    async def returned_tasks(self, user_id: int) -> dict[int, str | None]:
+        """O'quvchiga qaytarilgan va hali qayta topshirilmagan vazifalar: {task_id: sabab}."""
+        rows = await self._all(
+            "SELECT task_id, MAX(id) AS last_id FROM submissions WHERE user_id=? "
+            "GROUP BY task_id HAVING SUM(CASE WHEN returned=0 THEN 1 ELSE 0 END)=0",
+            (user_id,),
+        )
+        out: dict[int, str | None] = {}
+        for r in rows:
+            note = await self._one("SELECT return_note FROM submissions WHERE id=?", (r["last_id"],))
+            out[r["task_id"]] = note["return_note"] if note else None
+        return out
+
+    async def returned_map(self, task_ids: list[int]) -> dict[int, set[int]]:
+        """{user_id: {task_id}} — qaytarilgan va hali qayta topshirilmagan ishlar."""
+        if not task_ids:
+            return {}
+        lst = ",".join(str(int(i)) for i in task_ids)
+        rows = await self._all(
+            f"SELECT user_id, task_id FROM submissions WHERE task_id IN ({lst}) "
+            "GROUP BY user_id, task_id HAVING SUM(CASE WHEN returned=0 THEN 1 ELSE 0 END)=0"
+        )
+        out: dict[int, set[int]] = {}
+        for r in rows:
+            out.setdefault(r["user_id"], set()).add(r["task_id"])
+        return out
 
     # --- statistika ---
     async def week_stats(self, start: str, end: str) -> list[dict]:
-        return await self._all(
+        """Har o'quvchi uchun: nechta vazifa topshirgan, jami/o'rtacha ball.
+        Ball har VAZIFA uchun bir marta hisoblanadi (ko'p fayl yuborish ballni oshirmaydi)."""
+        rows = await self._all(
             "SELECT s.user_id, s.full_name, "
-            "COUNT(sub.id) AS total, COUNT(sub.score) AS graded, "
-            "COALESCE(SUM(sub.score),0) AS points, AVG(sub.score) AS avg_score "
-            "FROM students s LEFT JOIN submissions sub "
-            "ON sub.user_id=s.user_id AND sub.submit_date>=? AND sub.submit_date<? "
+            "COUNT(x.task_id) AS total, COUNT(x.score) AS graded, "
+            "COALESCE(SUM(x.score),0) AS points, AVG(x.score) AS avg_score "
+            "FROM students s LEFT JOIN ("
+            "  SELECT user_id, task_id, AVG(score) AS score FROM submissions "
+            "  WHERE submit_date>=? AND submit_date<? AND returned=0 GROUP BY user_id, task_id"
+            ") x ON x.user_id=s.user_id "
             "WHERE s.in_group=1" + self._not_hidden("s.user_id") +
-            " GROUP BY s.user_id ORDER BY points DESC, total DESC, s.full_name",
+            " GROUP BY s.user_id, s.full_name ORDER BY points DESC, total DESC, s.full_name",
             (start, end),
         )
+        for r in rows:
+            p = float(r["points"])
+            r["points"] = int(p) if p == int(p) else round(p, 1)
+        return rows
 
     async def student_summary(self, user_id: int) -> dict:
         row = await self._one(
-            "SELECT COUNT(*) AS total, COUNT(score) AS graded, AVG(score) AS avg_score "
-            "FROM submissions WHERE user_id=?",
+            "SELECT COUNT(*) AS total, COUNT(score) AS graded, AVG(score) AS avg_score FROM ("
+            "  SELECT task_id, AVG(score) AS score FROM submissions WHERE user_id=? AND returned=0 GROUP BY task_id"
+            ") x",
             (user_id,),
         )
         return row or {"total": 0, "graded": 0, "avg_score": None}
@@ -348,8 +484,10 @@ class DB:
         for offset in range(weeks - 1, -1, -1):
             start, end = week_range(today_, offset)
             row = await self._one(
-                "SELECT AVG(score) AS a FROM submissions "
-                "WHERE user_id=? AND submit_date>=? AND submit_date<?",
+                "SELECT AVG(score) AS a FROM ("
+                "  SELECT task_id, AVG(score) AS score FROM submissions "
+                "  WHERE user_id=? AND submit_date>=? AND submit_date<? AND returned=0 GROUP BY task_id"
+                ") x",
                 (user_id, start, end),
             )
             label = date.fromisoformat(start).strftime("%d.%m")
@@ -371,7 +509,7 @@ class DB:
         ids = ",".join(str(int(i)) for i in task_ids)
         rows = await self._all(
             f"SELECT user_id, task_id, AVG(score) AS score FROM submissions "
-            f"WHERE task_id IN ({ids}) GROUP BY user_id, task_id"
+            f"WHERE task_id IN ({ids}) AND returned=0 GROUP BY user_id, task_id"
         )
         out: dict[int, dict[int, float | None]] = {}
         for r in rows:
@@ -380,7 +518,7 @@ class DB:
 
     async def submissions_in_range(self, start: str, end: str) -> list[dict]:
         return await self._all(
-            "SELECT sub.submit_date, s.full_name, t.title AS task_title, sub.kind, sub.score "
+            "SELECT sub.submit_date, s.full_name, t.title AS task_title, sub.kind, sub.score, sub.returned "
             "FROM submissions sub JOIN students s ON s.user_id=sub.user_id "
             "JOIN tasks t ON t.id=sub.task_id "
             "WHERE sub.submit_date>=? AND sub.submit_date<?" + self._not_hidden("sub.user_id") +
@@ -398,6 +536,8 @@ class DB:
         return out
 
     def _import_value(self, col: str, v):
+        if col == "returned" and v is None:  # eski zaxira fayli (qaytarish ustunlari yo'q)
+            return 0
         if self.pg and col in TS_COLS and isinstance(v, str):
             return datetime.fromisoformat(v)
         return v

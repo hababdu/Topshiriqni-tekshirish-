@@ -86,13 +86,22 @@ async def _ensure_student(m: Message, db: DB) -> bool:
     return False
 
 
+async def _student_tasks(db: DB, uid: int, ws: str) -> tuple[list[dict], dict[int, str | None]]:
+    """Shu haftaning vazifalari + qaytarilgan (qayta topshirilishi kerak) eski vazifalar."""
+    base = await db.tasks_for_week(ws)
+    ret = await db.returned_tasks(uid)
+    base_ids = {t["id"] for t in base}
+    extra = await db.tasks_by_ids([i for i in ret if i not in base_ids])
+    return extra + base, ret
+
+
 @router.message(F.text == BTN_TASKS)
 async def show_tasks(m: Message, state: FSMContext, db: DB, cfg: Config):
     await state.clear()
     if not await _ensure_student(m, db):
         return
     ws = week_start(today(cfg.timezone)).isoformat()
-    tasks = await db.tasks_for_week(ws)
+    tasks, ret = await _student_tasks(db, m.from_user.id, ws)
     if not tasks:
         await m.answer("📭 Bu hafta uchun hali vazifa berilmagan.")
         return
@@ -103,6 +112,10 @@ async def show_tasks(m: Message, state: FSMContext, db: DB, cfg: Config):
             sc = mine[t["id"]]
             res = "⏳ tekshirilmoqda" if sc is None else score_badge(int(round(sc)))
             block = f"🟢 <b>{i}. {esc(t['title'])}</b>\n└ topshirilgan · {res}"
+        elif t["id"] in ret:
+            block = f"🔁 <b>{i}. {esc(t['title'])}</b>\n└ <b>qaytarilgan</b> — qayta topshiring"
+            if ret[t["id"]]:
+                block += "\n" + quote("Sabab: " + ret[t["id"]])
         else:
             block = f"🔴 <b>{i}. {esc(t['title'])}</b>\n└ topshirilmagan"
         if t["description"]:
@@ -124,15 +137,15 @@ async def choose_task(m: Message, state: FSMContext, db: DB, cfg: Config):
     if not await _ensure_student(m, db):
         return
     ws = week_start(today(cfg.timezone)).isoformat()
-    tasks = await db.tasks_for_week(ws)
+    tasks, ret = await _student_tasks(db, m.from_user.id, ws)
     if not tasks:
         await m.answer("📭 Bu hafta uchun hali vazifa berilmagan.")
         return
     mine = (await db.week_submissions(ws)).get(m.from_user.id, {})
     await m.answer(
         f"{title('📤', 'Vazifa topshirish')}\nQaysi vazifani topshirasiz? 👇\n"
-        f"{hint('🟢 topshirilgan · 🔴 topshirilmagan')}",
-        reply_markup=tasks_kb(tasks, set(mine)),
+        f"{hint('🟢 topshirilgan · 🔁 qaytarilgan · 🔴 topshirilmagan')}",
+        reply_markup=tasks_kb(tasks, set(mine), set(ret)),
     )
 
 

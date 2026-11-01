@@ -45,16 +45,17 @@ def done_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=BTN_DONE)]], resize_keyboard=True)
 
 
-def tasks_kb(tasks: list[dict], done: frozenset[int] | set[int] = frozenset()) -> InlineKeyboardMarkup:
-    """🟢 — topshirilgan, 🔴 — topshirilmagan."""
+def tasks_kb(
+    tasks: list[dict], done: frozenset[int] | set[int] = frozenset(), returned: frozenset[int] | set[int] = frozenset()
+) -> InlineKeyboardMarkup:
+    """🟢 — topshirilgan, 🔁 — qaytarilgan (qayta topshirish kerak), 🔴 — topshirilmagan."""
+
+    def mark(tid: int) -> str:
+        return "🟢" if tid in done else "🔁" if tid in returned else "🔴"
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=f"{'🟢' if t['id'] in done else '🔴'} {t['title'][:55]}",
-                    callback_data=f"task:{t['id']}",
-                )
-            ]
+            [InlineKeyboardButton(text=f"{mark(t['id'])} {t['title'][:55]}", callback_data=f"task:{t['id']}")]
             for t in tasks
         ]
     )
@@ -82,17 +83,67 @@ def board_kb(tasks: list[dict], task_id: int, status: str) -> InlineKeyboardMark
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def grade_kb(sub_id: int) -> InlineKeyboardMarkup:
+def grade_kb(first_id: int, last_id: int, scope: int = 0, mode: str = "p") -> InlineKeyboardMarkup:
+    """Baho tugmalari. first_id..last_id — shu o'quvchining shu vazifadagi ko'rsatilgan fayllari,
+    scope — qaysi vazifa tekshirilayotgani (0 = hammasi), mode — p (tekshirilmaganlar) / g (qayta ko'rish)."""
+    key = f"{first_id}:{last_id}:{scope}:{mode}"
+
     def row(nums):
-        return [InlineKeyboardButton(text=str(n), callback_data=f"g:{sub_id}:{n}") for n in nums]
+        return [InlineKeyboardButton(text=str(n), callback_data=f"g:{key}:{n}") for n in nums]
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
             row(range(0, 6)),
             row(range(6, 11)),
-            [InlineKeyboardButton(text="⏭ O'tkazib yuborish", callback_data=f"g:{sub_id}:skip")],
+            [
+                InlineKeyboardButton(text="↩️ Qaytarish", callback_data=f"g:{key}:ret"),
+                InlineKeyboardButton(text="⏭ O'tkazish", callback_data=f"g:{key}:skip"),
+            ],
         ]
     )
+
+
+REVIEW_FILTERS = {
+    "p": "⏳ Tekshirilmagan",
+    "d": "🟢 Tekshirilgan",
+    "r": "🔁 Qaytarilgan",
+    "a": "📚 Hammasi",
+}
+
+
+def task_label(t: dict) -> str:
+    """Vazifa tugmasidagi belgi va sonlar: ⏳ kutmoqda, 🔁 qaytarilgan, 🟢 hammasi tekshirilgan, ⚪ ish yo'q."""
+    if t["p"]:
+        mark = "⏳"
+    elif t["r"]:
+        mark = "🔁"
+    elif t["g"]:
+        mark = "🟢"
+    else:
+        mark = "⚪"
+    parts = [f"{e}{n}" for e, n in (("⏳", t["p"]), ("🟢", t["g"]), ("🔁", t["r"])) if n]
+    return f"{mark} {t['title'][:34]}" + (" · " + " ".join(parts) if parts else "")
+
+
+def review_menu_kb(tasks: list[dict], flt: str) -> InlineKeyboardMarkup:
+    """Tekshirish menyusi: tepada filtrlar, pastda vazifalar (belgi bilan)."""
+    def f(key: str):
+        text = REVIEW_FILTERS[key]
+        return InlineKeyboardButton(text=f"• {text}" if key == flt else text, callback_data=f"rf:{key}")
+
+    rows = [[f("p"), f("d")], [f("r"), f("a")]]
+    rows += [[InlineKeyboardButton(text=task_label(t), callback_data=f"rt:{t['id']}:{flt}")] for t in tasks]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def task_panel_kb(task_id: int, flt: str, n_pending: int, n_graded: int) -> InlineKeyboardMarkup:
+    rows = []
+    if n_pending:
+        rows.append([InlineKeyboardButton(text=f"▶️ Tekshirishni boshlash · ⏳ {n_pending}", callback_data=f"rv:{task_id}:p")])
+    if n_graded:
+        rows.append([InlineKeyboardButton(text=f"✏️ Baholanganlarni qayta ko'rish · 🟢 {n_graded}", callback_data=f"rv:{task_id}:g")])
+    rows.append([InlineKeyboardButton(text="◀️ Vazifalar ro'yxati", callback_data=f"rf:{flt}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def report_kb(offset: int) -> InlineKeyboardMarkup:

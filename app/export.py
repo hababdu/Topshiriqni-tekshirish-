@@ -12,6 +12,7 @@ from .timeutil import today, week_range
 
 GREEN = PatternFill("solid", fgColor="C6EFCE")
 RED = PatternFill("solid", fgColor="FFC7CE")
+YELLOW = PatternFill("solid", fgColor="FFEB9C")
 HEAD = PatternFill("solid", fgColor="1F2937")
 THIN = Side(style="thin", color="D1D5DB")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -79,6 +80,7 @@ async def build_stats_xlsx(db: DB, cfg: Config, period: str) -> tuple[bytes, str
     roster = await db.all_students()
     tasks = await db.tasks_in_range(start, end)
     smap = await db.score_map([t["id"] for t in tasks])
+    rmap = await db.returned_map([t["id"] for t in tasks])
     log_rows = await db.submissions_in_range(start, end)
     by_user = {s["user_id"]: s for s in roster}
 
@@ -135,6 +137,9 @@ async def build_stats_xlsx(db: DB, cfg: Config, period: str) -> tuple[bytes, str
                 n_ok += 1
                 c.value = _score(done[t["id"]]) if done[t["id"]] is not None else "✔"
                 c.fill = GREEN
+            elif t["id"] in rmap.get(s["user_id"], ()):
+                c.value = "↩"
+                c.fill = YELLOW
             else:
                 c.value = "✘"
                 c.fill = RED
@@ -145,7 +150,7 @@ async def build_stats_xlsx(db: DB, cfg: Config, period: str) -> tuple[bytes, str
         ws2.cell(row=row, column=3 + len(tasks)).fill = GREEN
         ws2.cell(row=row, column=4 + len(tasks)).fill = RED if len(tasks) - n_ok else GREEN
     legend_row = len(roster) + 3
-    ws2.cell(row=legend_row, column=2, value="Katak: ball — baholangan, ✔ — topshirilgan (hali baholanmagan), ✘ — topshirilmagan. ⚠ — botga /start bosmagan.")
+    ws2.cell(row=legend_row, column=2, value="Katak: ball — baholangan, ✔ — topshirilgan (hali baholanmagan), ✘ — topshirilmagan, ↩ — qaytarilgan (qayta topshirishi kerak). ⚠ — botga /start bosmagan.")
     if not tasks:
         ws2.cell(row=2, column=3, value="Bu davrda vazifa yo'q")
     ws2.freeze_panes = "C2"
@@ -156,7 +161,7 @@ async def build_stats_xlsx(db: DB, cfg: Config, period: str) -> tuple[bytes, str
     ws3 = wb.create_sheet("Barcha ishlar")
     _header(ws3, 1, ["Sana", "O'quvchi", "Vazifa", "Turi", "Ball"])
     for i, r in enumerate(log_rows, 2):
-        vals = [_fmt_date(r["submit_date"]), r["full_name"], r["task_title"], r["kind"], r["score"] if r["score"] is not None else "—"]
+        vals = [_fmt_date(r["submit_date"]), r["full_name"], r["task_title"], r["kind"], "↩ qaytarilgan" if r.get("returned") else (r["score"] if r["score"] is not None else "—")]
         for col, v in enumerate(vals, 1):
             ws3.cell(row=i, column=col, value=v).border = BORDER
     ws3.freeze_panes = "A2"
